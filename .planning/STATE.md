@@ -12,9 +12,10 @@
 | Phase | Name | Status |
 |-------|------|--------|
 | 1 | MVP Data & Signals | complete (2/2 plans) |
-| 2 | Premium Data Sources | pending |
-| 3 | Intelligence Platform | pending |
-| 4 | Autonomous Trading | pending |
+| 2 | Strategy Research Engine | pending |
+| 3 | ML Intelligence Layer | pending |
+| 4 | Paper Trading & Validation | pending |
+| 5 | Autonomous Trading | pending |
 
 ## Session Log
 
@@ -26,3 +27,4 @@
 | 2026-02-21 | plan_1-1_complete | Tastytrade client + Sonnet upgrade. 148 tests passing. 6 commits. |
 | 2026-02-21 | plan_1-2_complete | TradingView webhooks + CheddarFlow parser. 186 tests passing. 7 commits. |
 | 2026-02-21 | phase_1_complete | MVP Data & Signals phase done. All 2 plans executed. |
+| 2026-02-21 | roadmap_restructured | Expanded from 4 to 5 phases based on agent-trading research (4 docs, 4000+ lines). Identity shift: alert bot → trading research assistant → autonomous trader. New phases: Strategy Research Engine, ML Intelligence Layer, Paper Trading & Validation, Autonomous Trading. |
