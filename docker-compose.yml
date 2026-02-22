@@ -8,3 +8,9 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+    # Phase 2: Scale to s-2vcpu-4gb ($24/mo) for backtesting workloads
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '2'
+    #       memory: 4G
