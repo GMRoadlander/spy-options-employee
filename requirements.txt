@@ -12,3 +12,5 @@ fastapi>=0.115
 uvicorn>=0.34
 pyyaml>=6.0
 pyarrow>=14.0
+optopsy>=2.2.0
+skfolio>=0.4.0
