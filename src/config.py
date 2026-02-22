@@ -54,6 +54,18 @@ class Config:
     max_pain_convergence_pct: float = 0.005  # 0.5%
     oi_shift_threshold_pct: float = 0.10  # 10%
 
+    # Webhook server
+    webhook_port: int = int(os.getenv("WEBHOOK_PORT", "8000"))
+    webhook_secret: str = os.getenv("WEBHOOK_SECRET", "")
+
+    # TradingView webhook alerts
+    webhook_alerts_channel_id: int = int(os.getenv("DISCORD_WEBHOOK_ALERTS_CHANNEL_ID", "0"))
+
+    # CheddarFlow
+    cheddarflow_channel_id: int = int(os.getenv("DISCORD_CHEDDARFLOW_CHANNEL_ID", "0"))
+    cheddarflow_output_channel_id: int = int(os.getenv("DISCORD_CHEDDARFLOW_OUTPUT_CHANNEL_ID", "0"))
+    cheddarflow_min_premium: float = float(os.getenv("CHEDDARFLOW_MIN_PREMIUM", "50000"))
+
     # Database
     db_path: str = "data/spy_employee.db"
     history_retention_days: int = 30
