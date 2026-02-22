@@ -62,6 +62,7 @@ class SpyBot(commands.Bot):
             "src.discord_bot.cog_scheduler",
             "src.discord_bot.cog_alerts",
             "src.discord_bot.cog_webhooks",
+            "src.discord_bot.cog_cheddarflow",
         ]
 
         for ext in cog_extensions:
