@@ -1,0 +1,57 @@
+name: SPX Weekly Put Spread
+version: "1.0"
+description: >
+  Sell weekly put credit spreads on SPX with 5-7 DTE. Target 10-delta
+  short puts for high probability of expiring worthless. Quick theta decay
+  strategy for steady income. Close at 50% profit or on Thursday before
+  Friday expiration.
+ticker: SPX
+
+structure:
+  strategy_type: vertical_spread
+  dte_target: 7
+  dte_min: 5
+  dte_max: 10
+  legs:
+    - name: short_put
+      side: put
+      action: sell
+      delta_target: fixed
+      delta_value: 0.10
+      quantity: 1
+    - name: long_put
+      side: put
+      action: buy
+      delta_target: fixed
+      delta_value: 0.03
+      quantity: 1
+
+entry:
+  iv_rank_min: 0.0
+  iv_rank_max: 100.0
+  vix_min: 12.0
+  vix_max: 35.0
+  min_credit: 0.50
+  time_of_day: open
+
+exit:
+  profit_target_pct: 0.50
+  stop_loss_pct: 2.0
+  dte_close: 1
+
+sizing:
+  max_risk_pct: 0.01
+  max_positions: 3
+  max_contracts: 10
+  scale_with_iv: false
+
+schedule:
+  trading_days: [0, 1]
+  entry_window_start: "09:35"
+  entry_window_end: "11:00"
+  frequency: weekly
+
+tags:
+  - premium-selling
+  - bullish
+  - weekly

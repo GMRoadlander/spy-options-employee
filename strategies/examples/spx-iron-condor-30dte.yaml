@@ -1,0 +1,69 @@
+name: SPX Iron Condor 30 DTE
+version: "1.0"
+description: >
+  Sell iron condors on SPX with 30 DTE targeting 16-delta short strikes.
+  High probability strategy for range-bound markets. Best entered when
+  IV rank is elevated (above 30). Close at 50% of max profit or when
+  DTE reaches 7 days.
+ticker: SPX
+
+structure:
+  strategy_type: iron_condor
+  dte_target: 30
+  dte_min: 25
+  dte_max: 40
+  legs:
+    - name: short_put
+      side: put
+      action: sell
+      delta_target: fixed
+      delta_value: 0.16
+      quantity: 1
+    - name: long_put
+      side: put
+      action: buy
+      delta_target: fixed
+      delta_value: 0.05
+      quantity: 1
+    - name: short_call
+      side: call
+      action: sell
+      delta_target: fixed
+      delta_value: 0.16
+      quantity: 1
+    - name: long_call
+      side: call
+      action: buy
+      delta_target: fixed
+      delta_value: 0.05
+      quantity: 1
+
+entry:
+  iv_rank_min: 30.0
+  iv_rank_max: 100.0
+  vix_min: 15.0
+  vix_max: 40.0
+  min_credit: 3.00
+  time_of_day: open
+
+exit:
+  profit_target_pct: 0.50
+  stop_loss_pct: 2.0
+  dte_close: 7
+
+sizing:
+  max_risk_pct: 0.02
+  max_positions: 2
+  max_contracts: 5
+  scale_with_iv: true
+
+schedule:
+  trading_days: [0, 1, 2, 3, 4]
+  entry_window_start: "09:35"
+  entry_window_end: "10:30"
+  frequency: weekly
+
+tags:
+  - premium-selling
+  - neutral
+  - high-probability
