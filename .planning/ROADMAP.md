@@ -7,8 +7,8 @@
 **Goal**: Swap delayed CBOE data for real-time Tastytrade feed, upgrade AI to Sonnet, add TradingView webhooks and CheddarFlow flow parsing. Zero new analysis logic — just better data in, smarter commentary out.
 
 **Deliverables**:
-- [ ] Tastytrade API integration (dxfeed WebSocket streaming, replaces CBOE CDN + Tradier)
-- [ ] Claude Sonnet commentary upgrade (replace Haiku)
+- [x] Tastytrade API integration (dxfeed WebSocket streaming, replaces CBOE CDN + Tradier)
+- [x] Claude Sonnet commentary upgrade (replace Haiku)
 - [ ] TradingView webhook ingestion (FastAPI endpoint on droplet)
 - [ ] CheddarFlow Discord embed parser (listen to `#cheddarflow-raw`, filter SPX flow)
 - [ ] All 130 existing tests passing
