@@ -44,6 +44,20 @@
 
 ---
 
+## Phase 2.1: Code Review Fixes ✅ COMPLETE
+
+**Goal**: Fix 7 critical and 15 warning issues found in Phase 2-3 (Discord Research Interface) code review. Security hardening, deprecated API replacement, error handling, type safety, and test coverage.
+
+**Deliverables**:
+- [x] `.gitignore`, matplotlib backend ordering, FK enforcement, style deduplication
+- [x] Lifecycle `update_template()`, background task error handlers, sanitized exceptions, off-by-one fix, `_get_db()` helper
+- [x] `datetime.utcnow()` -> `datetime.now(timezone.utc)` (23 replacements), timezone consistency
+- [x] Color IndexError fix for >4 strategies, cooldowns, auth checks, AI client hardening (timeout, retry, reuse)
+- [x] XML delimiters for prompts, typed PipelineResult, N+1 query fix, longer UUIDs
+- [x] 7 new functional cog tests (457 total)
+
+---
+
 ## Phase 3: ML Intelligence Layer (~$400/mo)
 
 **Goal**: Add ML models that make the research engine smarter. Regime detection prevents wrong-strategy-in-wrong-market. Volatility forecasting improves entry timing. Anomaly detection catches institutional flow. Sentiment adds context signals.
