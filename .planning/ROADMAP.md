@@ -22,18 +22,18 @@
 **Goal**: Build the core strategy research loop. Borey defines strategies in plain English or YAML, the system backtests them against 18+ years of history, evaluates with a rigorous anti-overfitting pipeline, and reports results. This is where the bot's identity shifts from "alerting tool" to "trading research assistant."
 
 **Deliverables**:
-- [ ] ORATS historical data integration ($99/mo) — EOD option chains back to 2007
-- [ ] Optopsy + custom Python backtesting engine for SPX options strategies
-- [ ] YAML-based strategy template system (Borey defines strategies, no code)
+- [x] ORATS historical data integration ($99/mo) — EOD option chains back to 2007
+- [x] Optopsy + custom Python backtesting engine for SPX options strategies
+- [x] YAML-based strategy template system (Borey defines strategies, no code)
 - [ ] Natural language → structured strategy definition (Claude parses Borey's descriptions into YAML/JSON)
-- [ ] Strategy lifecycle state machine (IDEA → DEFINED → BACKTEST → PAPER → LIVE → RETIRED)
-- [ ] Anti-overfitting evaluation pipeline:
+- [x] Strategy lifecycle state machine (IDEA → DEFINED → BACKTEST → PAPER → LIVE → RETIRED)
+- [x] Anti-overfitting evaluation pipeline:
   - Walk-Forward Analysis (12-month IS / 3-month OOS)
   - Combinatorial Purged Cross-Validation (CPCV, PBO < 0.50 gate)
   - Deflated Sharpe Ratio (DSR, p < 0.05 gate)
   - Monte Carlo simulation (1,000 runs, 5th-percentile Sharpe gate)
-- [ ] Signal logging — start tracking all alert outcomes now to build feedback dataset
-- [ ] Strategy evaluation metrics: Sharpe, Sortino, Calmar, max drawdown, win rate, expectancy, profit factor, regime-conditional analysis
+- [x] Signal logging — start tracking all alert outcomes now to build feedback dataset
+- [x] Strategy evaluation metrics: Sharpe, Sortino, Calmar, max drawdown, win rate, expectancy, profit factor, regime-conditional analysis
 - [ ] Trade journal via Discord (daily summaries, weekly reviews, Borey rates and reviews)
 - [ ] Hypothesis testing framework (propose → formalize → test → prove/disprove)
 - [ ] Scale droplet to s-2vcpu-4gb ($24/mo)
