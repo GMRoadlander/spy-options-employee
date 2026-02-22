@@ -4,14 +4,14 @@
 
 - **Milestone**: 1.0
 - **Phase**: 1 (MVP Data & Signals)
-- **Status**: in-progress
+- **Status**: complete
 - **Last updated**: 2026-02-21
 
 ## Phase Progress
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | MVP Data & Signals | in-progress (1/2 plans complete) |
+| 1 | MVP Data & Signals | complete (2/2 plans) |
 | 2 | Premium Data Sources | pending |
 | 3 | Intelligence Platform | pending |
 | 4 | Autonomous Trading | pending |
@@ -24,3 +24,5 @@
 | 2026-02-21 | roadmap_created | ROADMAP.md with 4 phases, STATE.md initialized |
 | 2026-02-21 | phase_1_planned | 2 plans: 1-1 (Tastytrade + Sonnet), 1-2 (Webhooks + CheddarFlow) |
 | 2026-02-21 | plan_1-1_complete | Tastytrade client + Sonnet upgrade. 148 tests passing. 6 commits. |
+| 2026-02-21 | plan_1-2_complete | TradingView webhooks + CheddarFlow parser. 186 tests passing. 7 commits. |
+| 2026-02-21 | phase_1_complete | MVP Data & Signals phase done. All 2 plans executed. |

@@ -9,9 +9,9 @@
 **Deliverables**:
 - [x] Tastytrade API integration (dxfeed WebSocket streaming, replaces CBOE CDN + Tradier)
 - [x] Claude Sonnet commentary upgrade (replace Haiku)
-- [ ] TradingView webhook ingestion (FastAPI endpoint on droplet)
-- [ ] CheddarFlow Discord embed parser (listen to `#cheddarflow-raw`, filter SPX flow)
-- [ ] All 130 existing tests passing
+- [x] TradingView webhook ingestion (FastAPI endpoint on droplet)
+- [x] CheddarFlow Discord embed parser (listen to `#cheddarflow-raw`, filter SPX flow)
+- [x] All 186 tests passing (130 original + 38 webhook/CheddarFlow + 18 Tastytrade)
 
 **Research needed**: 🔬 Tastytrade API auth flow, dxfeed WebSocket protocol, FastAPI + discord.py co-hosting on single process
 
