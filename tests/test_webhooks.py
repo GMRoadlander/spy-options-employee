@@ -5,10 +5,12 @@ malformed request handling, and alert queueing.
 """
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.config import config
 from src.webhook.app import app
 from src.webhook.tradingview import TradingViewAlert, alert_queue
 
@@ -121,7 +123,8 @@ def test_alert_queued(client):
 
 def test_secret_not_required_when_unconfigured(client, monkeypatch):
     """When WEBHOOK_SECRET is empty, no secret header is needed."""
-    monkeypatch.setattr("src.webhook.tradingview.config.webhook_secret", "")
+    mock_config = replace(config, webhook_secret="")
+    monkeypatch.setattr("src.webhook.tradingview.config", mock_config)
     payload = {"action": "alert", "ticker": "SPX"}
     resp = client.post("/webhook/tradingview", json=payload)
     assert resp.status_code == 200
@@ -129,7 +132,8 @@ def test_secret_not_required_when_unconfigured(client, monkeypatch):
 
 def test_secret_validated_when_configured(client, monkeypatch):
     """When WEBHOOK_SECRET is set, correct header passes."""
-    monkeypatch.setattr("src.webhook.tradingview.config.webhook_secret", "my-secret-123")
+    mock_config = replace(config, webhook_secret="my-secret-123")
+    monkeypatch.setattr("src.webhook.tradingview.config", mock_config)
     payload = {"action": "alert", "ticker": "SPX"}
     resp = client.post(
         "/webhook/tradingview",
@@ -141,7 +145,8 @@ def test_secret_validated_when_configured(client, monkeypatch):
 
 def test_wrong_secret_returns_401(client, monkeypatch):
     """When WEBHOOK_SECRET is set and header is wrong, 401 is returned."""
-    monkeypatch.setattr("src.webhook.tradingview.config.webhook_secret", "my-secret-123")
+    mock_config = replace(config, webhook_secret="my-secret-123")
+    monkeypatch.setattr("src.webhook.tradingview.config", mock_config)
     payload = {"action": "alert", "ticker": "SPX"}
     resp = client.post(
         "/webhook/tradingview",
@@ -153,7 +158,8 @@ def test_wrong_secret_returns_401(client, monkeypatch):
 
 def test_missing_secret_returns_401(client, monkeypatch):
     """When WEBHOOK_SECRET is set and no header, 401 is returned."""
-    monkeypatch.setattr("src.webhook.tradingview.config.webhook_secret", "my-secret-123")
+    mock_config = replace(config, webhook_secret="my-secret-123")
+    monkeypatch.setattr("src.webhook.tradingview.config", mock_config)
     payload = {"action": "alert", "ticker": "SPX"}
     resp = client.post("/webhook/tradingview", json=payload)
     assert resp.status_code == 401

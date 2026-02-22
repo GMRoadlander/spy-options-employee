@@ -12,8 +12,6 @@ from datetime import datetime
 
 import discord
 
-from __future__ import annotations
-
 from src.analysis.analyzer import AnalysisResult
 from src.analysis.gex import GEXResult
 from src.analysis.max_pain import MaxPainResult
