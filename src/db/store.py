@@ -7,6 +7,7 @@ tracking to prevent notification spam.
 Tables:
     snapshots -- timestamped analysis results with key metrics + full JSON blob
     alert_cooldowns -- per-alert-type cooldown expiry timestamps
+    daily_features -- daily computed ML features per ticker (Phase 3)
 """
 
 import json
@@ -93,6 +94,9 @@ class Store:
 
         # WAL mode for better concurrent read performance
         await self._db.execute("PRAGMA journal_mode=WAL")
+
+        # Enforce foreign key constraints
+        await self._db.execute("PRAGMA foreign_keys = ON")
 
         # Create tables
         await self._db.execute("""
@@ -269,6 +273,37 @@ class Store:
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_signal_ratings_signal
             ON signal_ratings (signal_id)
+        """)
+
+        # Daily features table (Phase 3 — ML Intelligence Layer)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                iv_rank REAL,
+                iv_percentile REAL,
+                skew_25d REAL,
+                term_structure_slope REAL,
+                rv_iv_spread REAL,
+                hurst_exponent REAL,
+                net_gex REAL,
+                volume_pcr REAL,
+                oi_pcr REAL,
+                regime_state INTEGER,
+                regime_probability REAL,
+                vol_forecast_1d REAL,
+                vol_forecast_5d REAL,
+                sentiment_score REAL,
+                anomaly_score REAL,
+                computed_at TEXT NOT NULL,
+                UNIQUE(date, ticker)
+            )
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_daily_features_ticker_date
+            ON daily_features (ticker, date)
         """)
 
         await self._db.commit()

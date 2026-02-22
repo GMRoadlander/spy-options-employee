@@ -83,5 +83,8 @@ class Config:
     journal_channel_id: int = int(os.getenv("DISCORD_JOURNAL_CHANNEL_ID", "0"))
     monthly_report_day: int = int(os.getenv("MONTHLY_REPORT_DAY", "1"))
 
+    # ML Intelligence Layer (Phase 3)
+    ml_features_dir: str = os.getenv("ML_FEATURES_DIR", "data/ml_models")
+
 
 config = Config()
