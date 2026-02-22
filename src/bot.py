@@ -33,6 +33,9 @@ class SpyBot(commands.Bot):
         # Shared resources -- initialized in setup_hook
         self.data_manager: DataManager = None  # type: ignore[assignment]
         self.store = None  # Optional: will be set if db module is available
+        self.historical_store = None  # Optional: HistoricalStore (Phase 2)
+        self.strategy_manager = None  # Optional: StrategyManager (Phase 2)
+        self.signal_logger = None  # Optional: SignalLogger (Phase 2)
 
     async def setup_hook(self) -> None:
         """Initialize shared resources and load all cogs.
@@ -55,6 +58,41 @@ class SpyBot(commands.Bot):
         except Exception as exc:
             logger.error("Store initialization failed: %s -- running without persistence", exc)
             self.store = None
+
+        # Initialize HistoricalStore (Phase 2)
+        try:
+            from src.data.historical_store import HistoricalStore
+            from src.config import config
+            self.historical_store = HistoricalStore(config.historical_data_dir)
+            logger.info("HistoricalStore initialized at %s", config.historical_data_dir)
+        except ImportError:
+            logger.warning("HistoricalStore module not available")
+        except Exception as exc:
+            logger.error("HistoricalStore initialization failed: %s", exc)
+
+        # Initialize StrategyManager (Phase 2)
+        if self.store is not None and hasattr(self.store, "_db") and self.store._db is not None:
+            try:
+                from src.strategy.lifecycle import StrategyManager
+                self.strategy_manager = StrategyManager(self.store._db)
+                await self.strategy_manager.init_tables()
+                logger.info("StrategyManager initialized")
+            except ImportError:
+                logger.warning("StrategyManager module not available")
+            except Exception as exc:
+                logger.error("StrategyManager initialization failed: %s", exc)
+
+        # Initialize SignalLogger (Phase 2)
+        if self.store is not None and hasattr(self.store, "_db") and self.store._db is not None:
+            try:
+                from src.db.signal_log import SignalLogger
+                self.signal_logger = SignalLogger(self.store._db)
+                await self.signal_logger.init_table()
+                logger.info("SignalLogger initialized")
+            except ImportError:
+                logger.warning("SignalLogger module not available")
+            except Exception as exc:
+                logger.error("SignalLogger initialization failed: %s", exc)
 
         # Load cogs
         cog_extensions = [

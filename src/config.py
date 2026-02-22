@@ -70,5 +70,14 @@ class Config:
     db_path: str = "data/spy_employee.db"
     history_retention_days: int = 30
 
+    # ORATS (historical data source — Phase 2)
+    orats_api_key: str = os.getenv("ORATS_API_KEY", "")
+
+    # Strategy system (Phase 2)
+    strategy_dir: str = os.getenv("STRATEGY_DIR", "strategies")
+
+    # Historical data storage (Phase 2)
+    historical_data_dir: str = os.getenv("HISTORICAL_DATA_DIR", "data/historical")
+
 
 config = Config()
