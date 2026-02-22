@@ -1028,3 +1028,179 @@ def build_backtest_progress_embed(
     )
     embed.set_footer(text="SPY Options Employee | Backtest")
     return embed
+
+
+# -- Journal embeds -----------------------------------------------------------
+
+
+def build_daily_summary_embed(
+    date: "date_type",
+    signal_stats: dict,
+    strategy_summary: list[dict],
+    rating_stats: dict,
+) -> discord.Embed:
+    """Build a daily trading journal summary embed.
+
+    Args:
+        date: The date for the summary.
+        signal_stats: Signal statistics from SignalLogger.get_signal_stats().
+        strategy_summary: List of strategy dicts.
+        rating_stats: Rating stats dict with count and avg_rating.
+
+    Returns:
+        Discord Embed with daily summary.
+    """
+    from datetime import date as date_type  # noqa: F811
+
+    embed = discord.Embed(
+        title=f"Daily Journal -- {date}",
+        description="End-of-day trading summary",
+        color=COLOR_INFO,
+        timestamp=datetime.utcnow(),
+    )
+
+    # Signals
+    total = signal_stats.get("total_signals", 0)
+    by_type = signal_stats.get("by_type", {})
+    by_dir = signal_stats.get("by_direction", {})
+    outcomes = signal_stats.get("outcome_counts", {})
+
+    signals_text = f"**Total:** {total}\n"
+    if by_type:
+        type_parts = [f"{t}: {c}" for t, c in sorted(by_type.items())]
+        signals_text += f"**By Type:** {', '.join(type_parts)}\n"
+    if by_dir:
+        dir_parts = [f"{d}: {c}" for d, c in sorted(by_dir.items())]
+        signals_text += f"**By Direction:** {', '.join(dir_parts)}\n"
+    if outcomes:
+        out_parts = [f"{o}: {c}" for o, c in sorted(outcomes.items())]
+        signals_text += f"**Outcomes:** {', '.join(out_parts)}"
+
+    embed.add_field(name="Signals", value=signals_text or "No signals", inline=False)
+
+    # Strategies
+    active = [s for s in strategy_summary if s.get("status") not in ("retired",)]
+    if active:
+        strat_lines = []
+        for s in active[:5]:
+            strat_lines.append(f"#{s['id']} {s['name']} ({s['status']})")
+        embed.add_field(
+            name=f"Active Strategies ({len(active)})",
+            value="\n".join(strat_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Strategies", value="None active", inline=False)
+
+    # Ratings
+    if rating_stats.get("count", 0) > 0:
+        embed.add_field(
+            name="Ratings Today",
+            value=f"{rating_stats['count']} ratings, avg {rating_stats['avg_rating']:.1f}/5",
+            inline=True,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Journal")
+    return embed
+
+
+def build_weekly_review_embed(
+    start_date: "date_type",
+    end_date: "date_type",
+    signal_stats: dict,
+    strategy_summary: list[dict],
+    rating_stats: dict,
+) -> discord.Embed:
+    """Build a weekly trading review embed.
+
+    Args:
+        start_date: Start of the review period.
+        end_date: End of the review period.
+        signal_stats: Aggregated signal stats for the week.
+        strategy_summary: Current strategy statuses.
+        rating_stats: Aggregated rating stats for the week.
+
+    Returns:
+        Discord Embed with weekly review.
+    """
+    from datetime import date as date_type  # noqa: F811
+
+    embed = discord.Embed(
+        title=f"Weekly Review -- {start_date} to {end_date}",
+        description="Weekly trading performance summary",
+        color=COLOR_INFO,
+        timestamp=datetime.utcnow(),
+    )
+
+    # Signals section
+    total = signal_stats.get("total_signals", 0)
+    outcomes = signal_stats.get("outcome_counts", {})
+
+    wins = outcomes.get("win", 0)
+    total_outcomes = sum(outcomes.values()) if outcomes else 0
+    hit_rate = wins / total_outcomes if total_outcomes > 0 else 0
+
+    embed.add_field(
+        name="Signal Summary",
+        value=(
+            f"**Total Signals:** {total}\n"
+            f"**With Outcomes:** {total_outcomes}\n"
+            f"**Hit Rate:** {hit_rate:.1%}"
+        ),
+        inline=True,
+    )
+
+    # Strategy performance
+    status_counts: dict[str, int] = {}
+    for s in strategy_summary:
+        st = s.get("status", "unknown")
+        status_counts[st] = status_counts.get(st, 0) + 1
+
+    strat_text = "\n".join(f"{k.title()}: {v}" for k, v in sorted(status_counts.items()))
+    embed.add_field(
+        name="Strategy Status",
+        value=strat_text or "No strategies",
+        inline=True,
+    )
+
+    # Ratings
+    if rating_stats.get("count", 0) > 0:
+        embed.add_field(
+            name="Borey's Ratings",
+            value=f"{rating_stats['count']} ratings, avg {rating_stats['avg_rating']:.1f}/5",
+            inline=True,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Journal")
+    return embed
+
+
+def build_rating_confirmation_embed(
+    signal_id: int,
+    rating: int,
+    notes: str = "",
+) -> discord.Embed:
+    """Build a confirmation embed for a signal rating.
+
+    Args:
+        signal_id: The signal log ID that was rated.
+        rating: The rating value (1-5).
+        notes: Optional notes.
+
+    Returns:
+        Discord Embed confirming the rating.
+    """
+    stars = "+" * rating + "-" * (5 - rating)
+
+    embed = discord.Embed(
+        title=f"Signal #{signal_id} Rated",
+        description=f"Rating: **{stars}** ({rating}/5)",
+        color=COLOR_BULLISH if rating >= 4 else COLOR_NEUTRAL if rating >= 3 else COLOR_BEARISH,
+        timestamp=datetime.utcnow(),
+    )
+
+    if notes:
+        embed.add_field(name="Notes", value=notes, inline=False)
+
+    embed.set_footer(text="SPY Options Employee | Journal")
+    return embed
