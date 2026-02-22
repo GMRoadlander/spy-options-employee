@@ -186,6 +186,31 @@ class CheddarFlowCog(commands.Cog, name="CheddarFlow"):
                     flow.get("side"),
                     flow.get("premium"),
                 )
+
+                # Log signal (non-blocking, graceful degradation)
+                signal_logger = getattr(self.bot, "signal_logger", None)
+                if signal_logger is not None:
+                    try:
+                        from src.db.signal_log import SignalEvent
+                        side = flow.get("side", "")
+                        direction = "bullish" if side == "CALL" else ("bearish" if side == "PUT" else "neutral")
+                        event = SignalEvent(
+                            signal_type="flow",
+                            ticker=flow["ticker"],
+                            direction=direction,
+                            strength=0.7 if flow.get("is_sweep") else 0.5,
+                            source="cog_cheddarflow",
+                            metadata={
+                                "strike": flow.get("strike"),
+                                "side": side,
+                                "premium": flow.get("premium"),
+                                "is_sweep": flow.get("is_sweep", False),
+                            },
+                        )
+                        await signal_logger.log_signal(event)
+                    except Exception as exc:
+                        logger.debug("Signal logging failed (non-critical): %s", exc)
+
             except discord.HTTPException as exc:
                 logger.error("Failed to send CheddarFlow alert: %s", exc)
 

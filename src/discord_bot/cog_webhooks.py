@@ -54,6 +54,24 @@ class WebhooksCog(commands.Cog, name="Webhooks"):
             try:
                 await channel.send(embed=embed)  # type: ignore[union-attr]
                 logger.info("Posted TradingView alert to channel %d", channel_id)
+
+                # Log signal (non-blocking, graceful degradation)
+                signal_logger = getattr(self.bot, "signal_logger", None)
+                if signal_logger is not None:
+                    try:
+                        from src.db.signal_log import SignalEvent
+                        event = SignalEvent(
+                            signal_type="webhook",
+                            ticker=alert.ticker,
+                            direction=alert.action if hasattr(alert, "action") else "neutral",
+                            strength=0.6,
+                            source="cog_webhooks",
+                            metadata={"strategy": getattr(alert, "strategy", ""), "timeframe": getattr(alert, "timeframe", "")},
+                        )
+                        await signal_logger.log_signal(event)
+                    except Exception as exc:
+                        logger.debug("Signal logging failed (non-critical): %s", exc)
+
             except discord.HTTPException as exc:
                 logger.error("Failed to send webhook alert embed: %s", exc)
 

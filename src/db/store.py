@@ -145,6 +145,23 @@ class Store:
             )
         """)
 
+        # Signal log table (Phase 2-1)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS signal_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                signal_type TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                direction TEXT NOT NULL DEFAULT 'neutral',
+                strength REAL NOT NULL DEFAULT 0.5,
+                source TEXT,
+                metadata TEXT DEFAULT '{}',
+                outcome TEXT,
+                outcome_pnl REAL,
+                outcome_updated_at TEXT
+            )
+        """)
+
         # Indexes for fast lookups
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_timestamp
@@ -154,6 +171,16 @@ class Store:
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_strategy_transitions_strategy_id
             ON strategy_transitions (strategy_id)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_signal_log_ticker_type
+            ON signal_log (ticker, signal_type)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_signal_log_timestamp
+            ON signal_log (timestamp)
         """)
 
         await self._db.commit()
