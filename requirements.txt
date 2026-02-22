@@ -1,0 +1,10 @@
+discord.py>=2.4
+aiohttp>=3.9
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+matplotlib>=3.9
+anthropic>=0.40
+python-dotenv>=1.0
+aiosqlite>=0.20
+tastytrade>=8.0
