@@ -17,7 +17,7 @@
 
 ---
 
-## Phase 2: Strategy Research Engine (~$150/mo)
+## Phase 2: Strategy Research Engine (~$150/mo) ✅ COMPLETE
 
 **Goal**: Build the core strategy research loop. Borey defines strategies in plain English or YAML, the system backtests them against 18+ years of history, evaluates with a rigorous anti-overfitting pipeline, and reports results. This is where the bot's identity shifts from "alerting tool" to "trading research assistant."
 
@@ -25,7 +25,7 @@
 - [x] ORATS historical data integration ($99/mo) — EOD option chains back to 2007
 - [x] Optopsy + custom Python backtesting engine for SPX options strategies
 - [x] YAML-based strategy template system (Borey defines strategies, no code)
-- [ ] Natural language → structured strategy definition (Claude parses Borey's descriptions into YAML/JSON)
+- [x] Natural language → structured strategy definition (Claude parses Borey's descriptions into YAML/JSON)
 - [x] Strategy lifecycle state machine (IDEA → DEFINED → BACKTEST → PAPER → LIVE → RETIRED)
 - [x] Anti-overfitting evaluation pipeline:
   - Walk-Forward Analysis (12-month IS / 3-month OOS)
@@ -34,9 +34,9 @@
   - Monte Carlo simulation (1,000 runs, 5th-percentile Sharpe gate)
 - [x] Signal logging — start tracking all alert outcomes now to build feedback dataset
 - [x] Strategy evaluation metrics: Sharpe, Sortino, Calmar, max drawdown, win rate, expectancy, profit factor, regime-conditional analysis
-- [ ] Trade journal via Discord (daily summaries, weekly reviews, Borey rates and reviews)
-- [ ] Hypothesis testing framework (propose → formalize → test → prove/disprove)
-- [ ] Scale droplet to s-2vcpu-4gb ($24/mo)
+- [x] Trade journal via Discord (daily summaries, weekly reviews, Borey rates and reviews)
+- [x] Hypothesis testing framework (propose → formalize → test → prove/disprove)
+- [x] Scale droplet to s-2vcpu-4gb ($24/mo)
 
 **Research needed**: 🔬 ORATS API data format and rate limits, Optopsy integration with custom data, CPCV implementation via `skfolio` or `mlfinlab`, strategy template schema design
 
