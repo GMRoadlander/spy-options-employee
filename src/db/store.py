@@ -215,6 +215,62 @@ class Store:
             ON signal_log (timestamp)
         """)
 
+        # Hypothesis tables (Phase 2-3)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS hypotheses (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                testable_prediction TEXT NOT NULL,
+                null_hypothesis TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PROPOSED',
+                proposed_by TEXT NOT NULL,
+                proposed_at TEXT NOT NULL,
+                test_result TEXT,
+                p_value REAL,
+                tested_at TEXT
+            )
+        """)
+
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS hypothesis_strategies (
+                hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id),
+                strategy_id TEXT NOT NULL,
+                PRIMARY KEY (hypothesis_id, strategy_id)
+            )
+        """)
+
+        # Journal tables (Phase 2-3)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                author TEXT NOT NULL DEFAULT 'system',
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS signal_ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id INTEGER NOT NULL REFERENCES signal_log(id),
+                rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
+                notes TEXT,
+                rated_at TEXT NOT NULL
+            )
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_journal_entries_type
+            ON journal_entries (entry_type, created_at)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_signal_ratings_signal
+            ON signal_ratings (signal_id)
+        """)
+
         await self._db.commit()
         logger.info("Database initialized at %s", self.db_path)
 

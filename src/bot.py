@@ -36,6 +36,8 @@ class SpyBot(commands.Bot):
         self.historical_store = None  # Optional: HistoricalStore (Phase 2)
         self.strategy_manager = None  # Optional: StrategyManager (Phase 2)
         self.signal_logger = None  # Optional: SignalLogger (Phase 2)
+        self.strategy_parser = None  # Optional: StrategyParser (Phase 2-3)
+        self.hypothesis_manager = None  # Optional: HypothesisManager (Phase 2-3)
 
     async def setup_hook(self) -> None:
         """Initialize shared resources and load all cogs.
@@ -94,6 +96,28 @@ class SpyBot(commands.Bot):
             except Exception as exc:
                 logger.error("SignalLogger initialization failed: %s", exc)
 
+        # Initialize StrategyParser (Phase 2-3)
+        try:
+            from src.ai.strategy_parser import StrategyParser
+            self.strategy_parser = StrategyParser()
+            logger.info("StrategyParser initialized")
+        except ImportError:
+            logger.warning("StrategyParser module not available")
+        except Exception as exc:
+            logger.error("StrategyParser initialization failed: %s", exc)
+
+        # Initialize HypothesisManager (Phase 2-3)
+        if self.store is not None and hasattr(self.store, "_db") and self.store._db is not None:
+            try:
+                from src.strategy.hypothesis import HypothesisManager
+                self.hypothesis_manager = HypothesisManager(self.store._db)
+                await self.hypothesis_manager.init_tables()
+                logger.info("HypothesisManager initialized")
+            except ImportError:
+                logger.warning("HypothesisManager module not available")
+            except Exception as exc:
+                logger.error("HypothesisManager initialization failed: %s", exc)
+
         # Load cogs
         cog_extensions = [
             "src.discord_bot.cog_analysis",
@@ -101,6 +125,8 @@ class SpyBot(commands.Bot):
             "src.discord_bot.cog_alerts",
             "src.discord_bot.cog_webhooks",
             "src.discord_bot.cog_cheddarflow",
+            "src.discord_bot.cog_strategy",
+            "src.discord_bot.cog_journal",
         ]
 
         for ext in cog_extensions:

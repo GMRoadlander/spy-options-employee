@@ -79,5 +79,9 @@ class Config:
     # Historical data storage (Phase 2)
     historical_data_dir: str = os.getenv("HISTORICAL_DATA_DIR", "data/historical")
 
+    # Journal system (Phase 2-3)
+    journal_channel_id: int = int(os.getenv("DISCORD_JOURNAL_CHANNEL_ID", "0"))
+    monthly_report_day: int = int(os.getenv("MONTHLY_REPORT_DAY", "1"))
+
 
 config = Config()
