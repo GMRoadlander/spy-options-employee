@@ -694,3 +694,337 @@ def build_flow_alert_embed(flow: dict) -> discord.Embed:
 
     embed.set_footer(text="SPY Options Employee | CheddarFlow")
     return embed
+
+
+# -- Strategy management embeds ------------------------------------------------
+
+
+def build_strategy_define_embed(
+    template: "StrategyTemplate",
+    explanation: str,
+    strategy_id: int | None = None,
+) -> discord.Embed:
+    """Build an embed showing a parsed strategy for confirmation.
+
+    Args:
+        template: The parsed StrategyTemplate.
+        explanation: Claude's explanation of what it understood.
+        strategy_id: Optional DB ID if already saved.
+
+    Returns:
+        Discord Embed with strategy summary.
+    """
+    from src.strategy.schema import StrategyTemplate  # noqa: F811
+
+    color = COLOR_INFO
+    title = f"Strategy Defined -- {template.name}"
+    if strategy_id is not None:
+        title += f" (#{strategy_id})"
+
+    embed = discord.Embed(
+        title=title,
+        description=explanation if explanation else template.description,
+        color=color,
+        timestamp=datetime.utcnow(),
+    )
+
+    # Structure
+    structure = template.structure
+    legs_str = ""
+    for leg in structure.legs:
+        action = leg.action.value.upper()
+        side = leg.side.value.upper()
+        delta = f"{leg.delta_value:.0%}" if leg.delta_value else "ATM"
+        legs_str += f"  {action} {delta} {side}\n"
+
+    embed.add_field(
+        name="Structure",
+        value=(
+            f"**Type:** {structure.strategy_type.value.replace('_', ' ').title()}\n"
+            f"**DTE:** {structure.dte_min}-{structure.dte_max} (target {structure.dte_target})\n"
+            f"**Legs:**\n{legs_str}"
+        ),
+        inline=False,
+    )
+
+    # Entry rules
+    entry = template.entry
+    entry_parts = []
+    if entry.iv_rank_min > 0:
+        entry_parts.append(f"IV Rank >= {entry.iv_rank_min:.0f}")
+    if entry.iv_rank_max < 100:
+        entry_parts.append(f"IV Rank <= {entry.iv_rank_max:.0f}")
+    if entry.vix_min > 0:
+        entry_parts.append(f"VIX >= {entry.vix_min:.1f}")
+    if entry.vix_max < 100:
+        entry_parts.append(f"VIX <= {entry.vix_max:.1f}")
+
+    embed.add_field(
+        name="Entry",
+        value="\n".join(entry_parts) if entry_parts else "No filters",
+        inline=True,
+    )
+
+    # Exit rules
+    exit_rule = template.exit
+    embed.add_field(
+        name="Exit",
+        value=(
+            f"Profit: {exit_rule.profit_target_pct:.0%}\n"
+            f"Stop: {exit_rule.stop_loss_pct:.0f}x\n"
+            f"DTE Close: {exit_rule.dte_close}"
+        ),
+        inline=True,
+    )
+
+    embed.add_field(
+        name="Ticker",
+        value=template.ticker,
+        inline=True,
+    )
+
+    embed.set_footer(text="SPY Options Employee | Strategy")
+    return embed
+
+
+def build_strategy_list_embed(
+    strategies: list[dict],
+    status_filter: "StrategyStatus | None" = None,
+) -> discord.Embed:
+    """Build an embed listing strategies with status indicators.
+
+    Args:
+        strategies: List of strategy dicts from StrategyManager.
+        status_filter: Optional status filter that was applied.
+
+    Returns:
+        Discord Embed with strategy table.
+    """
+    filter_text = f" ({status_filter.value})" if status_filter else ""
+    embed = discord.Embed(
+        title=f"Strategies{filter_text}",
+        description=f"{len(strategies)} strategies found",
+        color=COLOR_INFO,
+        timestamp=datetime.utcnow(),
+    )
+
+    if not strategies:
+        embed.add_field(name="None", value="No strategies found.", inline=False)
+        return embed
+
+    STATUS_ICONS = {
+        "idea": "[IDEA]",
+        "defined": "[DEF]",
+        "backtest": "[BT]",
+        "paper": "[PAPER]",
+        "live": "[LIVE]",
+        "retired": "[RET]",
+    }
+
+    for s in strategies[:20]:  # Discord embed limit
+        icon = STATUS_ICONS.get(s["status"], "[?]")
+        created = s.get("created_at", "")[:10]
+        embed.add_field(
+            name=f"#{s['id']} {icon} {s['name']}",
+            value=f"Status: {s['status'].title()} | Created: {created}",
+            inline=False,
+        )
+
+    if len(strategies) > 20:
+        embed.set_footer(text=f"Showing 20 of {len(strategies)} | SPY Options Employee")
+    else:
+        embed.set_footer(text="SPY Options Employee | Strategy")
+
+    return embed
+
+
+def build_strategy_detail_embed(
+    strategy: dict,
+    history: list[dict] | None = None,
+) -> discord.Embed:
+    """Build a detailed embed for a single strategy.
+
+    Args:
+        strategy: Strategy dict from StrategyManager.
+        history: Optional transition history.
+
+    Returns:
+        Discord Embed with full strategy details.
+    """
+    STATUS_COLORS = {
+        "idea": COLOR_INFO,
+        "defined": COLOR_INFO,
+        "backtest": COLOR_NEUTRAL,
+        "paper": COLOR_NEUTRAL,
+        "live": COLOR_BULLISH,
+        "retired": COLOR_BEARISH,
+    }
+
+    color = STATUS_COLORS.get(strategy["status"], COLOR_INFO)
+
+    embed = discord.Embed(
+        title=f"Strategy #{strategy['id']} -- {strategy['name']}",
+        description=f"Status: **{strategy['status'].title()}**",
+        color=color,
+        timestamp=datetime.utcnow(),
+    )
+
+    # Show YAML snippet (truncated for Discord)
+    yaml_str = strategy.get("template_yaml", "")
+    if yaml_str:
+        truncated = yaml_str[:800]
+        if len(yaml_str) > 800:
+            truncated += "\n... (truncated)"
+        embed.add_field(
+            name="Template YAML",
+            value=f"```yaml\n{truncated}\n```",
+            inline=False,
+        )
+
+    # Metadata
+    embed.add_field(
+        name="Created",
+        value=strategy.get("created_at", "N/A")[:19],
+        inline=True,
+    )
+    embed.add_field(
+        name="Updated",
+        value=strategy.get("updated_at", "N/A")[:19],
+        inline=True,
+    )
+
+    # Transition history
+    if history:
+        hist_lines = []
+        for h in history[-5:]:  # Last 5 transitions
+            ts = h.get("transitioned_at", "")[:10]
+            reason = h.get("reason", "")
+            hist_lines.append(
+                f"`{ts}` {h['from_status']} -> {h['to_status']}"
+                + (f" ({reason})" if reason else "")
+            )
+        embed.add_field(
+            name="History",
+            value="\n".join(hist_lines) if hist_lines else "No transitions",
+            inline=False,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Strategy")
+    return embed
+
+
+def build_backtest_result_embed(
+    result: dict,
+    strategy_name: str,
+) -> discord.Embed:
+    """Build an embed showing backtest/evaluation results with gate indicators.
+
+    Color coding:
+        - Green: all gates passed (PROMOTE)
+        - Yellow: 3/4 passed (REFINE)
+        - Red: <=2/4 passed (REJECT)
+
+    Args:
+        result: Dict from backtest_results table row.
+        strategy_name: Strategy name for the title.
+
+    Returns:
+        Discord Embed with metrics and gate results.
+    """
+    recommendation = result.get("recommendation", "UNKNOWN")
+    if recommendation == "PROMOTE":
+        color = COLOR_BULLISH
+    elif recommendation == "REFINE":
+        color = COLOR_NEUTRAL
+    else:
+        color = COLOR_BEARISH
+
+    all_passed = bool(result.get("all_passed", 0))
+
+    embed = discord.Embed(
+        title=f"Backtest Results -- {strategy_name}",
+        description=f"Recommendation: **{recommendation}**",
+        color=color,
+        timestamp=datetime.utcnow(),
+    )
+
+    # Key metrics
+    embed.add_field(
+        name="Trades",
+        value=str(result.get("num_trades", 0)),
+        inline=True,
+    )
+    embed.add_field(
+        name="Sharpe",
+        value=f"{result.get('sharpe', 0):.3f}",
+        inline=True,
+    )
+    embed.add_field(
+        name="Sortino",
+        value=f"{result.get('sortino', 0):.3f}",
+        inline=True,
+    )
+    embed.add_field(
+        name="Win Rate",
+        value=f"{(result.get('win_rate', 0) or 0) * 100:.1f}%",
+        inline=True,
+    )
+    embed.add_field(
+        name="Max Drawdown",
+        value=f"${result.get('max_drawdown', 0):,.2f}",
+        inline=True,
+    )
+    embed.add_field(
+        name="Profit Factor",
+        value=f"{result.get('profit_factor', 0):.2f}",
+        inline=True,
+    )
+
+    # Gate results
+    def _gate(passed: int | bool) -> str:
+        return "[PASS]" if passed else "[FAIL]"
+
+    gates_text = (
+        f"WFA: {_gate(result.get('wfa_passed', 0))}\n"
+        f"CPCV: {_gate(result.get('cpcv_passed', 0))} (PBO: {result.get('cpcv_pbo', 0):.3f})\n"
+        f"DSR: {_gate(result.get('dsr_passed', 0))} (DSR: {result.get('dsr', 0):.3f})\n"
+        f"Monte Carlo: {_gate(result.get('mc_passed', 0))} (5th-pct Sharpe: {result.get('mc_5th_sharpe', 0):.3f})"
+    )
+
+    embed.add_field(
+        name="Anti-Overfitting Gates",
+        value=gates_text,
+        inline=False,
+    )
+
+    embed.add_field(
+        name="Period",
+        value=f"{result.get('start_date', 'N/A')} to {result.get('end_date', 'N/A')}",
+        inline=False,
+    )
+
+    embed.set_footer(text=f"SPY Options Employee | Run: {result.get('run_at', 'N/A')[:19]}")
+    return embed
+
+
+def build_backtest_progress_embed(
+    strategy_name: str,
+    status_message: str,
+) -> discord.Embed:
+    """Build a progress embed for long-running backtests.
+
+    Args:
+        strategy_name: Name of the strategy being backtested.
+        status_message: Current progress status.
+
+    Returns:
+        Discord Embed with progress info.
+    """
+    embed = discord.Embed(
+        title=f"Backtest In Progress -- {strategy_name}",
+        description=status_message,
+        color=COLOR_INFO,
+        timestamp=datetime.utcnow(),
+    )
+    embed.set_footer(text="SPY Options Employee | Backtest")
+    return embed
