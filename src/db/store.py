@@ -162,10 +162,42 @@ class Store:
             )
         """)
 
+        # Backtest results table (Phase 2-2)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                strategy_id TEXT NOT NULL,
+                run_at TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date TEXT NOT NULL,
+                num_trades INTEGER,
+                sharpe REAL,
+                sortino REAL,
+                max_drawdown REAL,
+                win_rate REAL,
+                profit_factor REAL,
+                wfa_passed INTEGER,
+                cpcv_pbo REAL,
+                cpcv_passed INTEGER,
+                dsr REAL,
+                dsr_passed INTEGER,
+                mc_5th_sharpe REAL,
+                mc_passed INTEGER,
+                all_passed INTEGER,
+                recommendation TEXT,
+                full_result TEXT
+            )
+        """)
+
         # Indexes for fast lookups
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_timestamp
             ON snapshots (ticker, timestamp)
+        """)
+
+        await self._db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_backtest_strategy
+            ON backtest_results(strategy_id, run_at)
         """)
 
         await self._db.execute("""
