@@ -3,9 +3,9 @@
 ## Current
 
 - **Milestone**: 1.0
-- **Phase**: 2 (Strategy Research Engine)
-- **Status**: Phase complete (3/3 plans)
-- **Last updated**: 2026-02-22
+- **Phase**: 3 (ML Intelligence Layer) -- PLANNED
+- **Status**: Phase 3 planned (9 plans, 0/9 executed)
+- **Last updated**: 2026-02-21
 
 ## Phase Progress
 
@@ -13,7 +13,8 @@
 |-------|------|--------|
 | 1 | MVP Data & Signals | complete (2/2 plans) |
 | 2 | Strategy Research Engine | complete (3/3 plans) |
-| 3 | ML Intelligence Layer | pending |
+| 2.1 | Code Review Fixes | complete (1/1 plans) |
+| 3 | ML Intelligence Layer | planned (9 plans) |
 | 4 | Paper Trading & Validation | pending |
 | 5 | Autonomous Trading | pending |
 
@@ -33,3 +34,5 @@
 | 2026-02-22 | plan_2-2_complete | Backtesting engine + anti-overfitting pipeline (WFA + CPCV + DSR + Monte Carlo). 386 tests passing (+113 new). 9 commits. |
 | 2026-02-22 | plan_2-3_complete | Discord research interface: NL strategy parser, strategy/journal cogs, hypothesis framework, reporting+charts. 450 tests passing (+64 new). 7 commits. |
 | 2026-02-22 | phase_2_complete | Strategy Research Engine phase done. All 3 plans executed. |
+| 2026-02-21 | phase_2.1_complete | Code review fixes: 7 critical + 15 warning issues fixed across 12 files. 457 tests passing (+7 new). 4 tasks. |
+| 2026-02-21 | phase_3_planned | 9 plans: 03-01 (Feature Store), 03-02 (HMM Regime), 03-03 (LSTM Vol), 03-04 (FinBERT Sentiment), 03-05 (Anomaly Detection), 03-06 (Polygon.io), 03-07 (Unusual Whales), 03-08 (Claude Reasoning + Learning), 03-09 (Discord ML Cog + Integration). New deps: hmmlearn, torch, transformers. Roadmap deviation: structured reasoning layer replaces multi-agent SDK (research recommends). |
