@@ -25,6 +25,11 @@ import logging
 from datetime import date, datetime
 from decimal import Decimal
 
+from tastytrade import DXLinkStreamer, Session
+from tastytrade.dxfeed import Greeks, Quote
+from tastytrade.instruments import get_option_chain
+from tastytrade.market_data import get_market_data_by_type
+
 from src.data import OptionContract, OptionsChain
 
 logger = logging.getLogger(__name__)
@@ -64,8 +69,6 @@ class TastytradeClient:
     async def _get_session(self):
         """Lazily create and return the tastytrade Session."""
         if self._session is None:
-            from tastytrade import Session
-
             logger.info(
                 "Tastytrade: creating session (sandbox=%s)", self._is_sandbox
             )
@@ -99,11 +102,6 @@ class TastytradeClient:
         Returns:
             OptionsChain with full data, or None on failure.
         """
-        from tastytrade import DXLinkStreamer
-        from tastytrade.dxfeed import Greeks, Quote
-        from tastytrade.instruments import get_option_chain
-        from tastytrade.market_data import get_market_data_by_type
-
         ticker_upper = ticker.upper()
         session = await self._get_session()
 
