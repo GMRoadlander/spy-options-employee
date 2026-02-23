@@ -19,6 +19,7 @@ from src.data import OptionContract, OptionsChain
 from src.ml.anomaly import (
     AnomalyManager,
     AnomalyReport,
+    FlowAnalyzer,
     FlowAnomalyDetector,
     _classify_score,
     detect_iv_anomaly,
@@ -759,3 +760,287 @@ class TestOverallScoreComputation:
 
             report = await mgr.update(chain, None)
             assert 0.0 <= report.overall_score <= 1.0
+
+
+# ===================================================================
+# FlowAnalyzer
+# ===================================================================
+
+
+def _make_mock_uw_client(flow_summary: dict | None = None) -> MagicMock:
+    """Create a mock UnusualWhalesClient with async methods."""
+    client = MagicMock()
+    if flow_summary is None:
+        flow_summary = {
+            "total_premium": 500000.0,
+            "call_premium": 300000.0,
+            "put_premium": 200000.0,
+            "sweep_count": 15,
+            "block_count": 5,
+            "golden_sweep_count": 2,
+            "net_sentiment": 0.3,
+            "dark_pool_volume": 50000,
+        }
+    client.get_flow_summary = AsyncMock(return_value=flow_summary)
+    return client
+
+
+class TestFlowAnalyzer:
+    """Tests for FlowAnalyzer class."""
+
+    @pytest.mark.asyncio
+    async def test_with_uw_client_returns_summary(self):
+        """FlowAnalyzer with mocked UW client returns correct summary."""
+        uw_client = _make_mock_uw_client()
+        analyzer = FlowAnalyzer(uw_client=uw_client)
+
+        result = await analyzer.get_enriched_flow("SPX")
+
+        assert result["flow_source"] == "unusual_whales"
+        assert result["total_premium"] == 500000.0
+        assert result["call_premium"] == 300000.0
+        assert result["put_premium"] == 200000.0
+        assert result["sweep_count"] == 15
+        assert result["block_count"] == 5
+        assert result["net_sentiment"] == 0.3
+        assert result["dark_pool_ratio"] > 0
+
+    @pytest.mark.asyncio
+    async def test_without_data_source_returns_empty(self):
+        """FlowAnalyzer without any data source returns empty summary."""
+        analyzer = FlowAnalyzer(uw_client=None, polygon_stream=None)
+
+        result = await analyzer.get_enriched_flow("SPX")
+
+        assert result["flow_source"] == "none"
+        assert result["total_premium"] == 0.0
+        assert result["sweep_count"] == 0
+        assert result["anomaly_flags"] == []
+
+    @pytest.mark.asyncio
+    async def test_with_uw_and_polygon_source_label(self):
+        """FlowAnalyzer with both sources labels correctly."""
+        uw_client = _make_mock_uw_client()
+        polygon_stream = MagicMock()  # just needs to exist
+
+        analyzer = FlowAnalyzer(uw_client=uw_client, polygon_stream=polygon_stream)
+        result = await analyzer.get_enriched_flow("SPX")
+
+        assert result["flow_source"] == "unusual_whales+polygon"
+
+    @pytest.mark.asyncio
+    async def test_anomaly_flags_detect_sweep_surge(self):
+        """Flow anomaly flags correctly detect sweep surges."""
+        uw_client = _make_mock_uw_client({
+            "total_premium": 500000.0,
+            "call_premium": 300000.0,
+            "put_premium": 200000.0,
+            "sweep_count": 100,  # Very high
+            "block_count": 5,
+            "golden_sweep_count": 2,
+            "net_sentiment": 0.3,
+            "dark_pool_volume": 50000,
+        })
+        analyzer = FlowAnalyzer(uw_client=uw_client)
+
+        baselines = {
+            "sweep_counts": [10, 12, 8, 11, 9, 10, 13, 7, 10, 11,
+                            10, 12, 8, 11, 9, 10, 13, 7, 10, 11],
+            "premium_values": [400000, 450000, 380000, 420000, 460000,
+                             400000, 450000, 380000, 420000, 460000,
+                             400000, 450000, 380000, 420000, 460000,
+                             400000, 450000, 380000, 420000, 460000],
+            "dark_pool_ratios": [0.2, 0.22, 0.18, 0.21, 0.19,
+                               0.2, 0.22, 0.18, 0.21, 0.19,
+                               0.2, 0.22, 0.18, 0.21, 0.19,
+                               0.2, 0.22, 0.18, 0.21, 0.19],
+        }
+
+        result = await analyzer.get_enriched_flow("SPX", historical_baselines=baselines)
+
+        assert len(result["anomaly_flags"]) == 3  # sweep, premium, dark pool
+        sweep_flag = next(f for f in result["anomaly_flags"] if f["type"] == "sweep_surge")
+        assert sweep_flag["is_anomaly"] is True
+        assert sweep_flag["z_score"] > 2.0
+
+    @pytest.mark.asyncio
+    async def test_uw_client_error_returns_empty(self):
+        """FlowAnalyzer handles UW client error gracefully."""
+        uw_client = MagicMock()
+        uw_client.get_flow_summary = AsyncMock(side_effect=Exception("Connection error"))
+        analyzer = FlowAnalyzer(uw_client=uw_client)
+
+        result = await analyzer.get_enriched_flow("SPX")
+
+        assert result["flow_source"] == "none"
+        assert result["total_premium"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_no_baselines_no_flags(self):
+        """Without historical baselines, no anomaly flags are produced."""
+        uw_client = _make_mock_uw_client()
+        analyzer = FlowAnalyzer(uw_client=uw_client)
+
+        result = await analyzer.get_enriched_flow("SPX", historical_baselines=None)
+
+        assert result["anomaly_flags"] == []
+
+
+# ===================================================================
+# AnomalyManager with flow data
+# ===================================================================
+
+
+class TestAnomalyManagerWithFlowData:
+    """Tests for AnomalyManager.update() with flow_data parameter."""
+
+    @pytest.mark.asyncio
+    async def test_update_with_flow_data_adjusts_weighting(self):
+        """AnomalyManager with flow data uses three-way weighting."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [
+                _make_contract(5000, "call", volume=99999, open_interest=100, iv=0.80),
+            ]
+            chain = _make_chain(contracts)
+            historical_data = {
+                "volume_history": {5000.0: [100, 102, 98, 101, 99]},
+                "iv_history": {5000.0: [0.19, 0.20, 0.21, 0.19, 0.20]},
+                "voi_history": [0.1, 0.12, 0.09, 0.11, 0.10],
+            }
+
+            flow_data = {
+                "flow_source": "unusual_whales",
+                "total_premium": 500000.0,
+                "sweep_count": 15,
+                "block_count": 5,
+                "net_sentiment": 0.3,
+                "anomaly_flags": [
+                    {"type": "sweep_surge", "is_anomaly": True, "z_score": 3.5},
+                    {"type": "premium_spike", "is_anomaly": False, "z_score": 1.2},
+                    {"type": "dark_pool_divergence", "is_anomaly": False, "z_score": 0.5},
+                ],
+            }
+
+            report = await mgr.update(chain, historical_data, flow_data=flow_data)
+
+            assert isinstance(report, AnomalyReport)
+            assert 0.0 <= report.overall_score <= 1.0
+            assert len(report.flow_anomalies) == 3
+
+    @pytest.mark.asyncio
+    async def test_update_without_flow_data_maintains_original_behavior(self):
+        """AnomalyManager without flow data maintains original z-score weighting."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [
+                _make_contract(5000, "call", volume=99999, open_interest=100, iv=0.80),
+            ]
+            chain = _make_chain(contracts)
+            historical_data = {
+                "volume_history": {5000.0: [100, 102, 98, 101, 99]},
+                "iv_history": {5000.0: [0.19, 0.20, 0.21, 0.19, 0.20]},
+                "voi_history": [0.1, 0.12, 0.09, 0.11, 0.10],
+            }
+
+            # Without flow_data — should use original weighting
+            report_no_flow = await mgr.update(chain, historical_data, flow_data=None)
+
+            # Without forest, overall_score = z_score_raw
+            z_report = scan_chain_anomalies(chain, historical_data)
+            assert report_no_flow.overall_score == pytest.approx(z_report.overall_score)
+            assert report_no_flow.flow_anomalies == []
+
+    @pytest.mark.asyncio
+    async def test_flow_data_with_all_anomalies_increases_score(self):
+        """Flow data with all flags anomalous contributes to higher score."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [_make_contract(5000, "call")]
+            chain = _make_chain(contracts)
+
+            # Run without flow first
+            report_no_flow = await mgr.update(chain, None, ticker="TEST1", flow_data=None)
+
+            # Run with all-anomaly flow data
+            flow_data = {
+                "flow_source": "unusual_whales",
+                "total_premium": 500000.0,
+                "anomaly_flags": [
+                    {"type": "sweep_surge", "is_anomaly": True},
+                    {"type": "premium_spike", "is_anomaly": True},
+                    {"type": "dark_pool_divergence", "is_anomaly": True},
+                ],
+            }
+            report_with_flow = await mgr.update(chain, None, ticker="TEST2", flow_data=flow_data)
+
+            # Flow with all anomalies should give higher score than no flow
+            assert report_with_flow.overall_score >= report_no_flow.overall_score
+
+    @pytest.mark.asyncio
+    async def test_flow_anomalies_stored_in_report(self):
+        """Flow anomaly flags are stored in the AnomalyReport."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [_make_contract(5000, "call")]
+            chain = _make_chain(contracts)
+
+            flow_data = {
+                "flow_source": "unusual_whales",
+                "total_premium": 500000.0,
+                "anomaly_flags": [
+                    {"type": "sweep_surge", "is_anomaly": True, "z_score": 3.0},
+                ],
+            }
+
+            report = await mgr.update(chain, None, flow_data=flow_data)
+
+            assert len(report.flow_anomalies) == 1
+            assert report.flow_anomalies[0]["type"] == "sweep_surge"
+            assert report.flow_anomalies[0]["is_anomaly"] is True
+
+    @pytest.mark.asyncio
+    async def test_flow_data_none_source_treated_as_no_flow(self):
+        """Flow data with 'none' source is treated as no flow data."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [_make_contract(5000, "call")]
+            chain = _make_chain(contracts)
+
+            flow_data = {
+                "flow_source": "none",
+                "total_premium": 0.0,
+                "anomaly_flags": [],
+            }
+
+            report = await mgr.update(chain, None, flow_data=flow_data)
+
+            # Should behave same as no flow data
+            assert report.flow_anomalies == []
+
+
+class TestAnomalyReportFlowField:
+    """Tests for the flow_anomalies field on AnomalyReport."""
+
+    def test_default_flow_anomalies_empty(self):
+        """Default report has empty flow_anomalies list."""
+        report = AnomalyReport()
+        assert report.flow_anomalies == []
+
+    def test_custom_flow_anomalies(self):
+        """Can set custom flow_anomalies."""
+        report = AnomalyReport(
+            flow_anomalies=[{"type": "sweep_surge", "is_anomaly": True}],
+        )
+        assert len(report.flow_anomalies) == 1
+        assert report.flow_anomalies[0]["type"] == "sweep_surge"

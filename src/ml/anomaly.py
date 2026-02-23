@@ -11,11 +11,13 @@ The module also provides:
 
 - :class:`FlowAnomalyDetector` — scikit-learn IsolationForest wrapper
   for multi-feature anomaly detection on options flow data.
+- :class:`FlowAnalyzer` — combines Unusual Whales flow data with
+  Polygon real-time data into unified flow summaries with anomaly flags.
 - :class:`AnomalyManager` — async pipeline that combines z-score
-  detectors with isolation forest scoring and persists results to the
-  feature store.
+  detectors with isolation forest scoring and optional institutional
+  flow signals, then persists results to the feature store.
 
-Phase 3-05 of the ML intelligence layer.
+Phase 3-05 / 3-07 of the ML intelligence layer.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ class AnomalyReport:
         iv_anomalies: Results from IV anomaly detection.
         voi_anomalies: Results from volume/OI ratio detection.
         strike_clusters: Top strikes by volume concentration.
+        flow_anomalies: Flow-based anomaly flags from institutional data.
         overall_score: Composite anomaly score in [0, 1].
         timestamp: ISO-format timestamp of the report.
     """
@@ -58,6 +61,7 @@ class AnomalyReport:
     iv_anomalies: list[dict] = field(default_factory=list)
     voi_anomalies: list[dict] = field(default_factory=list)
     strike_clusters: list[dict] = field(default_factory=list)
+    flow_anomalies: list[dict] = field(default_factory=list)
     overall_score: float = 0.0
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -505,6 +509,199 @@ class FlowAnomalyDetector:
 
 
 # ---------------------------------------------------------------------------
+# FlowAnalyzer — unified flow data from Unusual Whales + Polygon
+# ---------------------------------------------------------------------------
+
+
+class FlowAnalyzer:
+    """Combines Unusual Whales flow data with Polygon real-time data.
+
+    Produces unified flow summaries with anomaly flags for sweep surges,
+    premium spikes, and dark pool divergence. Works with either, both,
+    or neither data source.
+
+    Args:
+        uw_client: Optional :class:`UnusualWhalesClient` for institutional flow.
+        polygon_stream: Optional :class:`PolygonOptionsStream` for real-time data.
+    """
+
+    def __init__(
+        self,
+        uw_client: object | None = None,
+        polygon_stream: object | None = None,
+    ) -> None:
+        self._uw_client = uw_client
+        self._polygon_stream = polygon_stream
+
+    async def get_enriched_flow(
+        self,
+        ticker: str = "SPX",
+        historical_baselines: dict | None = None,
+    ) -> dict:
+        """Combine UW flow data with Polygon real-time data.
+
+        Args:
+            ticker: Underlying ticker (default "SPX").
+            historical_baselines: Optional dict with keys:
+                - ``sweep_counts``: list of historical daily sweep counts
+                - ``premium_values``: list of historical daily total premiums
+                - ``dark_pool_ratios``: list of historical dark pool ratios
+
+        Returns:
+            Unified flow summary dict with:
+            ``flow_source``, ``total_premium``, ``call_premium``,
+            ``put_premium``, ``sweep_count``, ``block_count``,
+            ``net_sentiment``, ``dark_pool_ratio``, ``top_trades``,
+            ``anomaly_flags``.
+        """
+        empty_result = {
+            "flow_source": "none",
+            "total_premium": 0.0,
+            "call_premium": 0.0,
+            "put_premium": 0.0,
+            "sweep_count": 0,
+            "block_count": 0,
+            "net_sentiment": 0.0,
+            "dark_pool_ratio": 0.0,
+            "top_trades": [],
+            "anomaly_flags": [],
+        }
+
+        # Try Unusual Whales first
+        uw_summary = None
+        if self._uw_client is not None:
+            try:
+                uw_summary = await self._uw_client.get_flow_summary(ticker)
+            except Exception as exc:
+                logger.warning("FlowAnalyzer: UW client error: %s", exc)
+
+        if uw_summary is None or uw_summary.get("total_premium", 0.0) == 0.0:
+            # No UW data available
+            if self._polygon_stream is None:
+                return empty_result
+            # Polygon-only mode: we have no summary API, return minimal
+            return {
+                **empty_result,
+                "flow_source": "polygon",
+            }
+
+        # Build unified summary from UW data
+        total_premium = uw_summary.get("total_premium", 0.0)
+        dark_pool_volume = uw_summary.get("dark_pool_volume", 0)
+
+        # Approximate dark pool ratio vs total volume
+        # This is a rough heuristic; in production this would be
+        # calibrated against total exchange volume
+        dark_pool_ratio = 0.0
+        if total_premium > 0 and dark_pool_volume > 0:
+            # Normalize to a 0-1 ratio (dark pool volume / (dark pool + estimated exchange volume))
+            # Use a baseline estimate of 5x dark pool = total
+            dark_pool_ratio = min(dark_pool_volume / (dark_pool_volume * 5), 1.0) if dark_pool_volume > 0 else 0.0
+
+        flow_source = "unusual_whales"
+        if self._polygon_stream is not None:
+            flow_source = "unusual_whales+polygon"
+
+        result = {
+            "flow_source": flow_source,
+            "total_premium": total_premium,
+            "call_premium": uw_summary.get("call_premium", 0.0),
+            "put_premium": uw_summary.get("put_premium", 0.0),
+            "sweep_count": uw_summary.get("sweep_count", 0),
+            "block_count": uw_summary.get("block_count", 0),
+            "net_sentiment": uw_summary.get("net_sentiment", 0.0),
+            "dark_pool_ratio": dark_pool_ratio,
+            "top_trades": [],
+            "anomaly_flags": [],
+        }
+
+        # Compute anomaly flags using historical baselines
+        if historical_baselines:
+            result["anomaly_flags"] = self._detect_flow_anomalies(
+                result, historical_baselines
+            )
+
+        return result
+
+    @staticmethod
+    def _detect_flow_anomalies(
+        flow_data: dict,
+        baselines: dict,
+    ) -> list[dict]:
+        """Detect anomalies in flow data against historical baselines.
+
+        Checks for:
+          - Sweep surge: sweep_count > 2 sigma above daily average
+          - Premium spike: total_premium > 2 sigma above daily average
+          - Dark pool divergence: dark_pool_ratio significantly different
+            from 20-day average
+
+        Args:
+            flow_data: Current flow summary.
+            baselines: Historical baselines with sweep_counts, premium_values,
+                       dark_pool_ratios lists.
+
+        Returns:
+            List of anomaly flag dicts with type, value, threshold, is_anomaly.
+        """
+        flags: list[dict] = []
+        threshold_sigma = 2.0
+
+        # Sweep surge
+        sweep_history = baselines.get("sweep_counts", [])
+        if len(sweep_history) >= 2:
+            arr = np.asarray(sweep_history, dtype=float)
+            mean = float(np.mean(arr))
+            std = float(np.std(arr, ddof=1))
+            current = flow_data.get("sweep_count", 0)
+            z = (current - mean) / std if std > 1e-10 else 0.0
+            flags.append({
+                "type": "sweep_surge",
+                "value": current,
+                "mean": mean,
+                "std": std,
+                "z_score": float(z),
+                "is_anomaly": z > threshold_sigma,
+            })
+
+        # Premium spike
+        premium_history = baselines.get("premium_values", [])
+        if len(premium_history) >= 2:
+            arr = np.asarray(premium_history, dtype=float)
+            mean = float(np.mean(arr))
+            std = float(np.std(arr, ddof=1))
+            current = flow_data.get("total_premium", 0.0)
+            z = (current - mean) / std if std > 1e-10 else 0.0
+            flags.append({
+                "type": "premium_spike",
+                "value": current,
+                "mean": mean,
+                "std": std,
+                "z_score": float(z),
+                "is_anomaly": z > threshold_sigma,
+            })
+
+        # Dark pool divergence
+        dp_history = baselines.get("dark_pool_ratios", [])
+        if len(dp_history) >= 2:
+            arr = np.asarray(dp_history, dtype=float)
+            mean = float(np.mean(arr))
+            std = float(np.std(arr, ddof=1))
+            current = flow_data.get("dark_pool_ratio", 0.0)
+            z = abs(current - mean) / std if std > 1e-10 else 0.0
+            flags.append({
+                "type": "dark_pool_divergence",
+                "value": current,
+                "mean": mean,
+                "std": std,
+                "z_score": float(z),
+                "is_anomaly": z > threshold_sigma,
+            })
+
+        return flags
+
+
+# ---------------------------------------------------------------------------
 # AnomalyManager — async pipeline
 # ---------------------------------------------------------------------------
 
@@ -521,6 +718,11 @@ def _classify_score(score: float) -> str:
 class AnomalyManager:
     """Async pipeline combining z-score detectors with isolation forest.
 
+    When flow data is available (from :class:`FlowAnalyzer`), the overall
+    score weighting adjusts to: z-score=0.4, isolation_forest=0.3, flow=0.3.
+    Without flow data, the original weighting is used: z-score=0.6,
+    isolation_forest=0.4 (or z-score only if no forest is fitted).
+
     Persists the composite ``anomaly_score`` to the feature store after
     each update cycle.
 
@@ -529,8 +731,14 @@ class AnomalyManager:
         model_dir: Directory for isolation forest model artifacts.
     """
 
+    # Weights without flow data (original)
     _Z_SCORE_WEIGHT = 0.6
     _FOREST_WEIGHT = 0.4
+
+    # Weights with flow data
+    _Z_SCORE_WEIGHT_WITH_FLOW = 0.4
+    _FOREST_WEIGHT_WITH_FLOW = 0.3
+    _FLOW_WEIGHT = 0.3
 
     def __init__(self, feature_store: FeatureStore, model_dir: str) -> None:
         self._feature_store = feature_store
@@ -548,13 +756,19 @@ class AnomalyManager:
         chain: OptionsChain,
         historical_data: dict | None,
         ticker: str = "SPX",
+        flow_data: dict | None = None,
     ) -> AnomalyReport:
         """Run z-score detectors + isolation forest and persist results.
+
+        When *flow_data* is provided (from :class:`FlowAnalyzer`), flow-based
+        anomaly signals are included and the score weighting is adjusted to
+        z-score=0.4, forest=0.3, flow=0.3.
 
         Args:
             chain: Current options chain snapshot.
             historical_data: Historical data for z-score baselines.
             ticker: Ticker symbol for feature store persistence.
+            flow_data: Optional flow summary from :class:`FlowAnalyzer`.
 
         Returns:
             :class:`AnomalyReport` with composite ``overall_score``.
@@ -566,7 +780,8 @@ class AnomalyManager:
 
         # 2. Isolation forest score (if fitted)
         forest_raw = 0.0
-        if self._forest is not None and self._forest._fitted:
+        has_forest = self._forest is not None and self._forest._fitted
+        if has_forest:
             features = self._extract_features(chain)
             if features is not None and len(features) > 0:
                 predictions = self._forest.predict(features)
@@ -574,33 +789,61 @@ class AnomalyManager:
                 anomaly_count = sum(1 for p in predictions if p["is_anomaly"])
                 forest_raw = anomaly_count / len(predictions) if predictions else 0.0
 
-        # 3. Compute weighted overall score
-        if self._forest is not None and self._forest._fitted:
+        # 3. Flow-based anomaly score (if flow_data provided)
+        flow_raw = 0.0
+        has_flow = flow_data is not None and flow_data.get("flow_source", "none") != "none"
+        if has_flow:
+            anomaly_flags = flow_data.get("anomaly_flags", [])
+            report.flow_anomalies = anomaly_flags
+            if anomaly_flags:
+                flow_anomaly_count = sum(
+                    1 for f in anomaly_flags if f.get("is_anomaly", False)
+                )
+                flow_raw = flow_anomaly_count / len(anomaly_flags)
+
+        # 4. Compute weighted overall score
+        if has_flow:
+            # Three-way weighting: z-score=0.4, forest=0.3, flow=0.3
+            if has_forest:
+                overall = (
+                    self._Z_SCORE_WEIGHT_WITH_FLOW * z_score_raw
+                    + self._FOREST_WEIGHT_WITH_FLOW * forest_raw
+                    + self._FLOW_WEIGHT * flow_raw
+                )
+            else:
+                # No forest, but flow available: z-score + flow
+                # Redistribute forest weight proportionally
+                overall = (
+                    (self._Z_SCORE_WEIGHT_WITH_FLOW / (self._Z_SCORE_WEIGHT_WITH_FLOW + self._FLOW_WEIGHT)) * z_score_raw
+                    + (self._FLOW_WEIGHT / (self._Z_SCORE_WEIGHT_WITH_FLOW + self._FLOW_WEIGHT)) * flow_raw
+                )
+        elif has_forest:
             overall = (
                 self._Z_SCORE_WEIGHT * z_score_raw
                 + self._FOREST_WEIGHT * forest_raw
             )
         else:
-            # No isolation forest — use z-score only
+            # No isolation forest, no flow — use z-score only
             overall = z_score_raw
 
         overall = min(max(overall, 0.0), 1.0)
         report.overall_score = overall
 
-        # 4. Cache report
+        # 5. Cache report
         self._latest_report[ticker] = report
 
-        # 5. Persist to feature store
+        # 6. Persist to feature store
         today = date.today().isoformat()
         await self._feature_store.save_features(
             ticker, today, {"anomaly_score": overall}
         )
 
         logger.info(
-            "Anomaly update for %s: score=%.3f (%s)",
+            "Anomaly update for %s: score=%.3f (%s) [flow=%s]",
             ticker,
             overall,
             _classify_score(overall),
+            "yes" if has_flow else "no",
         )
 
         return report
