@@ -4,7 +4,7 @@
 
 - **Milestone**: 1.0
 - **Phase**: 3 (ML Intelligence Layer) -- IN PROGRESS
-- **Status**: Phase 3 in progress (9 plans, 4/9 executed)
+- **Status**: Phase 3 in progress (9 plans, 5/9 executed)
 - **Last updated**: 2026-02-23
 
 ## Phase Progress
@@ -14,7 +14,7 @@
 | 1 | MVP Data & Signals | complete (2/2 plans) |
 | 2 | Strategy Research Engine | complete (3/3 plans) |
 | 2.1 | Code Review Fixes | complete (1/1 plans) |
-| 3 | ML Intelligence Layer | in progress (4/9 plans) |
+| 3 | ML Intelligence Layer | in progress (5/9 plans) |
 | 4 | Paper Trading & Validation | pending |
 | 5 | Autonomous Trading | pending |
 
@@ -40,3 +40,4 @@
 | 2026-02-23 | plan_03-02_complete | HMM regime detection: RegimeDetector (fit/predict/BIC/save/load) + RegimeManager (daily pipeline, feature store integration). 558 tests passing (+40 new). 2 commits. |
 | 2026-02-23 | plan_03-03_complete | LSTM vol forecasting: VolLSTM (2-layer, hidden=64), VolForecaster (train/predict/evaluate/save/load), VolManager (daily pipeline + feature store). 612 tests passing (+54 new). 2 commits. |
 | 2026-02-23 | plan_03-04_complete | FinBERT sentiment pipeline: SentimentScorer (lazy loading, batch scoring), NewsClient (Polygon.io, rate limiting), SentimentManager (daily update + velocity). 647 tests passing (+35 new). 2 commits. |
+| 2026-02-23 | plan_03-05_complete | Anomaly detection: z-score detectors (volume, IV, V/OI, clustering) + IsolationForest + AnomalyManager pipeline. 698 tests passing (+51 new). 2 commits. |
