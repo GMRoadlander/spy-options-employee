@@ -88,6 +88,7 @@ class Config:
 
     # Polygon.io (news + full market data — Phase 3+)
     polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
+    polygon_rate_limit: int = int(os.getenv("POLYGON_RATE_LIMIT", "5"))
     news_lookback_hours: int = int(os.getenv("NEWS_LOOKBACK_HOURS", "24"))
 
 
