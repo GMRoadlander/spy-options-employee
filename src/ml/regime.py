@@ -367,3 +367,230 @@ class RegimeDetector:
         t = getattr(self, "_n_train_obs", 1000)
         bic = -2.0 * ll + k * np.log(t)
         return float(bic)
+
+
+# ======================================================================
+# RegimeManager — daily update pipeline with feature store integration
+# ======================================================================
+
+# Maximum rolling window size kept in memory.
+_ROLLING_WINDOW = 1000
+
+# Retrain thresholds.
+_RETRAIN_AGE_DAYS = 30
+_RETRAIN_TRANSITION_COUNT = 3
+_RETRAIN_TRANSITION_WINDOW = 5
+
+
+class RegimeManager:
+    """Orchestrates daily regime detection and feature store persistence.
+
+    Keeps a rolling window of recent returns and VIX observations in
+    memory so that :meth:`update` does not need to query the database on
+    every call.
+
+    Args:
+        feature_store: An initialised :class:`FeatureStore` for persisting
+            regime state and probabilities.
+        model_dir: Directory where model pickle files are stored.
+    """
+
+    def __init__(self, feature_store: FeatureStore, model_dir: str) -> None:
+        self._feature_store = feature_store
+        self._model_dir = model_dir
+        self._detector: RegimeDetector | None = None
+
+        # Rolling history kept in memory.
+        self._returns: list[float] = []
+        self._vix: list[float] = []
+
+        # Tracking for retrain heuristic.
+        self._trained_at: datetime | None = None
+        self._recent_states: list[int] = []  # last N predicted states
+
+    @property
+    def detector(self) -> RegimeDetector | None:
+        """The underlying :class:`RegimeDetector`, or None if uninitialised."""
+        return self._detector
+
+    @property
+    def model_path(self) -> str:
+        """Path to the persisted model pickle file."""
+        return os.path.join(self._model_dir, "regime_model.pkl")
+
+    # ------------------------------------------------------------------
+    # Public async API
+    # ------------------------------------------------------------------
+
+    async def initialize(
+        self,
+        historical_returns: list[float],
+        historical_vix: list[float],
+    ) -> None:
+        """Perform initial model fitting with BIC-based state selection.
+
+        Selects 2 vs 3 states via BIC, fits the chosen model, and saves
+        the artifacts to disk.
+
+        Args:
+            historical_returns: Daily returns (at least 252 observations).
+            historical_vix: Daily VIX levels (same length as returns).
+        """
+        returns_arr = np.asarray(historical_returns, dtype=np.float64)
+        vix_arr = np.asarray(historical_vix, dtype=np.float64)
+
+        # Select optimal number of states.
+        selector = RegimeDetector(n_states=2)
+        best_n = selector.select_n_states(returns_arr, vix_arr)
+        logger.info("Selected %d-state HMM via BIC", best_n)
+
+        # Fit the chosen model.
+        detector = RegimeDetector(n_states=best_n)
+        detector.fit(returns_arr, vix_arr)
+
+        # Save to disk.
+        os.makedirs(self._model_dir, exist_ok=True)
+        detector.save(self.model_path)
+
+        self._detector = detector
+        self._trained_at = datetime.now()
+
+        # Seed rolling window (keep last _ROLLING_WINDOW observations).
+        self._returns = list(returns_arr[-_ROLLING_WINDOW:])
+        self._vix = list(vix_arr[-_ROLLING_WINDOW:])
+        self._recent_states = []
+
+        logger.info("RegimeManager initialized with %d-state model", best_n)
+
+    async def update(
+        self,
+        latest_return: float,
+        latest_vix: float,
+        ticker: str = "SPX",
+    ) -> dict:
+        """Append a new daily observation, predict regime, and persist.
+
+        Args:
+            latest_return: Today's daily return.
+            latest_vix: Today's VIX close.
+            ticker: Ticker symbol for feature store persistence.
+
+        Returns:
+            Prediction dict from :meth:`RegimeDetector.predict`.
+
+        Raises:
+            RuntimeError: If :meth:`initialize` has not been called.
+        """
+        if self._detector is None:
+            raise RuntimeError("RegimeManager not initialized. Call initialize() first.")
+
+        # Append to rolling window.
+        self._returns.append(float(latest_return))
+        self._vix.append(float(latest_vix))
+
+        # Trim to rolling window size.
+        if len(self._returns) > _ROLLING_WINDOW:
+            self._returns = self._returns[-_ROLLING_WINDOW:]
+            self._vix = self._vix[-_ROLLING_WINDOW:]
+
+        # Predict on the full rolling window.
+        returns_arr = np.asarray(self._returns, dtype=np.float64)
+        vix_arr = np.asarray(self._vix, dtype=np.float64)
+        prediction = self._detector.predict(returns_arr, vix_arr)
+
+        # Track state transitions for retrain heuristic.
+        self._recent_states.append(prediction["state"])
+        if len(self._recent_states) > _RETRAIN_TRANSITION_WINDOW:
+            self._recent_states = self._recent_states[-_RETRAIN_TRANSITION_WINDOW:]
+
+        # Persist to feature store.
+        today = date.today().isoformat()
+        await self._feature_store.save_features(
+            ticker,
+            today,
+            {
+                "regime_state": prediction["state"],
+                "regime_probability": max(prediction["probabilities"]),
+            },
+        )
+
+        logger.info(
+            "Regime update for %s: state=%d (%s), prob=%.3f",
+            ticker,
+            prediction["state"],
+            prediction["state_name"],
+            max(prediction["probabilities"]),
+        )
+        return prediction
+
+    async def get_current_regime(self, ticker: str = "SPX") -> dict | None:
+        """Read the latest regime state from the feature store.
+
+        Args:
+            ticker: Ticker symbol.
+
+        Returns:
+            Dict with ``regime_state`` and ``regime_probability`` keys,
+            or None if no regime data has been stored yet.
+        """
+        latest = await self._feature_store.get_latest_features(ticker)
+        if latest is None:
+            return None
+
+        regime_state = latest.get("regime_state")
+        regime_prob = latest.get("regime_probability")
+
+        if regime_state is None:
+            return None
+
+        state_int = int(regime_state)
+        n_states = self._detector.n_states if self._detector else 2
+        state_name = _STATE_NAMES.get((n_states, state_int), f"state-{state_int}")
+
+        return {
+            "regime_state": state_int,
+            "regime_probability": float(regime_prob) if regime_prob is not None else 0.0,
+            "state_name": state_name,
+        }
+
+    async def should_retrain(self, ticker: str = "SPX") -> bool:
+        """Determine whether the model should be retrained.
+
+        Returns True if:
+        - The model has not been trained in :data:`_RETRAIN_AGE_DAYS` days, OR
+        - There have been more than :data:`_RETRAIN_TRANSITION_COUNT`
+          regime transitions in the last :data:`_RETRAIN_TRANSITION_WINDOW`
+          days (structural break heuristic).
+
+        Args:
+            ticker: Ticker symbol (reserved for future per-ticker models).
+
+        Returns:
+            True if retraining is recommended.
+        """
+        # Check age.
+        if self._trained_at is None:
+            return True
+
+        age = (datetime.now() - self._trained_at).days
+        if age >= _RETRAIN_AGE_DAYS:
+            logger.info("Model is %d days old (threshold %d), retrain recommended", age, _RETRAIN_AGE_DAYS)
+            return True
+
+        # Check transition frequency.
+        if len(self._recent_states) >= 2:
+            transitions = sum(
+                1
+                for i in range(1, len(self._recent_states))
+                if self._recent_states[i] != self._recent_states[i - 1]
+            )
+            if transitions > _RETRAIN_TRANSITION_COUNT:
+                logger.info(
+                    "%d transitions in last %d observations (threshold %d), retrain recommended",
+                    transitions,
+                    len(self._recent_states),
+                    _RETRAIN_TRANSITION_COUNT,
+                )
+                return True
+
+        return False

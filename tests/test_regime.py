@@ -1,18 +1,20 @@
 """Tests for HMM regime detection (src/ml/regime.py).
 
 Covers RegimeDetector fit, predict, state sorting, save/load, BIC
-model selection, and edge cases.
+model selection, edge cases, and RegimeManager pipeline.
 """
 
 from __future__ import annotations
 
 import os
 import tempfile
+from datetime import datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-from src.ml.regime import MIN_OBSERVATIONS, RegimeDetector
+from src.ml.regime import MIN_OBSERVATIONS, RegimeDetector, RegimeManager
 
 
 # ---------------------------------------------------------------------------
@@ -268,3 +270,188 @@ class TestRegimeDetectorPersistence:
         det = RegimeDetector(n_states=2)
         with pytest.raises(FileNotFoundError):
             det.load("/tmp/nonexistent_model_abc123.pkl")
+
+
+# ---------------------------------------------------------------------------
+# RegimeManager tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_feature_store() -> MagicMock:
+    """Create a mock FeatureStore with async methods."""
+    store = MagicMock()
+    store.save_features = AsyncMock()
+    store.get_latest_features = AsyncMock(return_value=None)
+    return store
+
+
+class TestRegimeManagerInitialize:
+    """RegimeManager.initialize() stores model artifacts."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_creates_model_file(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            assert mgr.detector is not None
+            assert mgr.detector._fitted is True
+            assert os.path.exists(mgr.model_path)
+
+    @pytest.mark.asyncio
+    async def test_initialize_sets_trained_at(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+            assert mgr._trained_at is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_populates_rolling_window(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+            assert len(mgr._returns) == len(returns)
+            assert len(mgr._vix) == len(vix)
+
+
+class TestRegimeManagerUpdate:
+    """RegimeManager.update() persists to feature store."""
+
+    @pytest.mark.asyncio
+    async def test_update_persists_to_feature_store(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            result = await mgr.update(0.001, 15.0, ticker="SPX")
+
+            assert isinstance(result, dict)
+            assert "state" in result
+            assert "state_name" in result
+            store.save_features.assert_called()
+            call_args = store.save_features.call_args
+            assert call_args[0][0] == "SPX"
+            features = call_args[0][2]
+            assert "regime_state" in features
+            assert "regime_probability" in features
+
+    @pytest.mark.asyncio
+    async def test_update_appends_to_rolling_window(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            initial_len = len(mgr._returns)
+            await mgr.update(0.002, 16.0)
+            assert len(mgr._returns) == initial_len + 1
+
+    @pytest.mark.asyncio
+    async def test_update_without_initialize_raises(self) -> None:
+        store = _make_mock_feature_store()
+        mgr = RegimeManager(store, "/tmp/nonexistent")
+        with pytest.raises(RuntimeError, match="not initialized"):
+            await mgr.update(0.001, 15.0)
+
+
+class TestRegimeManagerGetCurrentRegime:
+    """RegimeManager.get_current_regime() reads from feature store."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_data(self) -> None:
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = None
+        mgr = RegimeManager(store, "/tmp")
+        result = await mgr.get_current_regime("SPX")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_regime_from_store(self) -> None:
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "regime_state": 0,
+            "regime_probability": 0.92,
+        }
+        mgr = RegimeManager(store, "/tmp")
+        result = await mgr.get_current_regime("SPX")
+        assert result is not None
+        assert result["regime_state"] == 0
+        assert result["regime_probability"] == 0.92
+        assert result["state_name"] == "risk-on"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_regime_state_missing(self) -> None:
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "regime_state": None,
+            "regime_probability": None,
+        }
+        mgr = RegimeManager(store, "/tmp")
+        result = await mgr.get_current_regime("SPX")
+        assert result is None
+
+
+class TestRegimeManagerShouldRetrain:
+    """Retrain heuristic tests."""
+
+    @pytest.mark.asyncio
+    async def test_retrain_when_never_trained(self) -> None:
+        store = _make_mock_feature_store()
+        mgr = RegimeManager(store, "/tmp")
+        assert await mgr.should_retrain() is True
+
+    @pytest.mark.asyncio
+    async def test_no_retrain_when_recently_trained(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            # Just trained, should not need retrain.
+            assert await mgr.should_retrain() is False
+
+    @pytest.mark.asyncio
+    async def test_retrain_when_old_model(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            # Fake an old training date.
+            mgr._trained_at = datetime.now() - timedelta(days=31)
+            assert await mgr.should_retrain() is True
+
+    @pytest.mark.asyncio
+    async def test_retrain_on_frequent_transitions(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            # Simulate frequent regime transitions (>3 in 5 observations).
+            mgr._recent_states = [0, 1, 0, 1, 0]
+            assert await mgr.should_retrain() is True
+
+    @pytest.mark.asyncio
+    async def test_no_retrain_stable_transitions(self) -> None:
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+
+            # Stable: all same state, 0 transitions.
+            mgr._recent_states = [0, 0, 0, 0, 0]
+            assert await mgr.should_retrain() is False
