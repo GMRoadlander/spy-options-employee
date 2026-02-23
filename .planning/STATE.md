@@ -4,7 +4,7 @@
 
 - **Milestone**: 1.0
 - **Phase**: 3 (ML Intelligence Layer) -- IN PROGRESS
-- **Status**: Phase 3 in progress (9 plans, 2/9 executed)
+- **Status**: Phase 3 in progress (9 plans, 3/9 executed)
 - **Last updated**: 2026-02-23
 
 ## Phase Progress
@@ -14,7 +14,7 @@
 | 1 | MVP Data & Signals | complete (2/2 plans) |
 | 2 | Strategy Research Engine | complete (3/3 plans) |
 | 2.1 | Code Review Fixes | complete (1/1 plans) |
-| 3 | ML Intelligence Layer | in progress (2/9 plans) |
+| 3 | ML Intelligence Layer | in progress (3/9 plans) |
 | 4 | Paper Trading & Validation | pending |
 | 5 | Autonomous Trading | pending |
 
@@ -38,3 +38,4 @@
 | 2026-02-21 | phase_3_planned | 9 plans: 03-01 (Feature Store), 03-02 (HMM Regime), 03-03 (LSTM Vol), 03-04 (FinBERT Sentiment), 03-05 (Anomaly Detection), 03-06 (Polygon.io), 03-07 (Unusual Whales), 03-08 (Claude Reasoning + Learning), 03-09 (Discord ML Cog + Integration). New deps: hmmlearn, torch, transformers. Roadmap deviation: structured reasoning layer replaces multi-agent SDK (research recommends). |
 | 2026-02-22 | plan_03-01_complete | Feature store foundation: daily_features table (15 cols), FeatureStore CRUD, 6 computation functions. 518 tests passing (+61 new). 2 commits. |
 | 2026-02-23 | plan_03-02_complete | HMM regime detection: RegimeDetector (fit/predict/BIC/save/load) + RegimeManager (daily pipeline, feature store integration). 558 tests passing (+40 new). 2 commits. |
+| 2026-02-23 | plan_03-03_complete | LSTM vol forecasting: VolLSTM (2-layer, hidden=64), VolForecaster (train/predict/evaluate/save/load), VolManager (daily pipeline + feature store). 612 tests passing (+54 new). 2 commits. |
