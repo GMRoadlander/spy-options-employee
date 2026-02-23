@@ -91,5 +91,8 @@ class Config:
     polygon_rate_limit: int = int(os.getenv("POLYGON_RATE_LIMIT", "5"))
     news_lookback_hours: int = int(os.getenv("NEWS_LOOKBACK_HOURS", "24"))
 
+    # Unusual Whales (institutional flow + dark pool — Phase 3)
+    unusual_whales_api_key: str = os.getenv("UNUSUAL_WHALES_API_KEY", "")
+
 
 config = Config()
