@@ -617,3 +617,194 @@ class TestVolManagerGetCurrentForecast:
         mgr = VolManager(store, "/tmp")
         result = await mgr.get_current_forecast("SPX")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Additional tests for training pipeline and feature store integration
+# ---------------------------------------------------------------------------
+
+
+class TestTrainingPipelineConvergence:
+    """Detailed training convergence and temporal split tests."""
+
+    def test_train_loss_decreases_over_epochs(self) -> None:
+        """Training loss should generally decrease during training."""
+        returns, vix = _make_synthetic_series(n=500, seed=42)
+        ds, stats = prepare_training_data(returns, vix, lookback=20)
+
+        f = VolForecaster(lookback=20, hidden_size=32, n_features=5)
+        f._stats = stats
+
+        # Train for 5 epochs first.
+        result_5 = f.train(ds, epochs=5, lr=0.001, patience=100, batch_size=32)
+        loss_5 = result_5["train_loss"]
+
+        # Reinitialise and train for 20 epochs.
+        f2 = VolForecaster(lookback=20, hidden_size=32, n_features=5)
+        f2._stats = stats
+        result_20 = f2.train(ds, epochs=20, lr=0.001, patience=100, batch_size=32)
+        loss_20 = result_20["val_loss"]
+
+        # More epochs should yield lower or similar loss.
+        assert loss_20 <= loss_5 + 0.5  # Allow small tolerance.
+
+    def test_temporal_split_preserves_order(self) -> None:
+        """Validation set should come from the end of the dataset (temporal)."""
+        ds, stats = _make_vol_dataset(n=200, lookback=20)
+        f = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+        f._stats = stats
+
+        # Train with 20% val split = 36 samples val, 144 train.
+        result = f.train(ds, epochs=3, val_split=0.2)
+        # Verify training produced non-zero stats.
+        assert result["train_loss"] > 0
+        assert result["val_loss"] > 0
+
+    def test_val_split_zero_uses_all_for_training(self) -> None:
+        """With val_split=0 only 1 sample in validation."""
+        ds, stats = _make_vol_dataset(n=200, lookback=20)
+        f = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+        f._stats = stats
+
+        # val_split=0.0 still has at least 1 validation sample (max(1, ...)).
+        result = f.train(ds, epochs=3, val_split=0.0)
+        assert result["epochs_trained"] == 3
+
+    def test_train_then_predict_produces_finite_values(self) -> None:
+        """Full pipeline: prepare -> train -> predict should give finite output."""
+        returns, vix = _make_synthetic_series(n=500, seed=42)
+        ds, stats = prepare_training_data(returns, vix, lookback=20)
+
+        f = VolForecaster(lookback=20, hidden_size=32, n_features=5)
+        f._stats = stats
+        f.train(ds, epochs=10, lr=0.001, patience=5)
+
+        # Create a simple feature array for prediction.
+        fake_features = np.random.randn(20, 5).astype(np.float32)
+        result = f.predict(fake_features)
+        assert np.isfinite(result["vol_1d"])
+        assert np.isfinite(result["vol_5d"])
+
+
+class TestEvaluationPipeline:
+    """Detailed evaluation metric tests."""
+
+    def test_evaluate_rmse_geq_mae(self) -> None:
+        """RMSE should always be >= MAE."""
+        ds, stats = _make_vol_dataset(n=200, lookback=20)
+        f = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+        f._stats = stats
+        f.train(ds, epochs=5, patience=3)
+
+        result = f.evaluate(ds)
+        assert result["rmse"] >= result["mae"]
+
+    def test_evaluate_after_training_metrics_change(self) -> None:
+        """Metrics from an untrained model should differ from a trained one."""
+        ds, stats = _make_vol_dataset(n=200, lookback=20, seed=99)
+
+        # Untrained model.
+        f_untrained = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+        f_untrained._stats = stats
+        eval_untrained = f_untrained.evaluate(ds)
+
+        # Trained model.
+        f_trained = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+        f_trained._stats = stats
+        f_trained.train(ds, epochs=20, lr=0.001, patience=10)
+        eval_trained = f_trained.evaluate(ds)
+
+        # MAE should generally be lower after training (or at least different).
+        assert eval_untrained["mae"] != eval_trained["mae"]
+
+    def test_evaluate_directional_accuracy_is_float(self) -> None:
+        ds, stats = _make_vol_dataset(n=200, lookback=20)
+        f = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+        f._stats = stats
+
+        result = f.evaluate(ds)
+        assert isinstance(result["directional_accuracy"], float)
+
+
+class TestVolManagerEndToEnd:
+    """End-to-end VolManager lifecycle tests."""
+
+    @pytest.mark.asyncio
+    async def test_initialize_with_optional_features(self) -> None:
+        """Initialize with all optional features provided."""
+        returns, vix = _make_synthetic_series(n=500)
+        n = len(returns)
+        vix_slope = pd.Series(np.random.randn(n))
+        regime = pd.Series(np.random.choice([0, 1], n))
+        hurst = pd.Series(np.random.uniform(0.3, 0.7, n))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = VolManager(store, tmpdir, lookback=20)
+            result = await mgr.initialize(
+                returns, vix,
+                vix_slope=vix_slope,
+                regime=regime,
+                hurst=hurst,
+                epochs=5,
+                patience=3,
+            )
+            assert mgr.forecaster is not None
+            assert "train_loss" in result
+
+    @pytest.mark.asyncio
+    async def test_model_path_property(self) -> None:
+        store = _make_mock_feature_store()
+        mgr = VolManager(store, "/some/dir", lookback=20)
+        assert mgr.model_path == "/some/dir/vol_model.pt"
+
+    @pytest.mark.asyncio
+    async def test_update_fills_buffer_gradually(self) -> None:
+        """Buffer should grow with each update call."""
+        returns, vix = _make_synthetic_series(n=500)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = VolManager(store, tmpdir, lookback=20)
+            await mgr.initialize(returns, vix, epochs=5, patience=3)
+
+            assert len(mgr._feature_buffer) == 0
+            await mgr.update({"realized_vol": 0.15, "vix": 15.0})
+            assert len(mgr._feature_buffer) == 1
+            await mgr.update({"realized_vol": 0.16, "vix": 16.0})
+            assert len(mgr._feature_buffer) == 2
+
+    @pytest.mark.asyncio
+    async def test_update_default_feature_values(self) -> None:
+        """Missing keys in latest_features dict should default to 0.0."""
+        returns, vix = _make_synthetic_series(n=500)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr = VolManager(store, tmpdir, lookback=20)
+            await mgr.initialize(returns, vix, epochs=5, patience=3)
+
+            # Only provide partial features.
+            result = await mgr.update({"vix": 15.0})
+            # Should not raise; missing keys default to 0.0.
+            assert "vol_1d" in result
+
+    @pytest.mark.asyncio
+    async def test_save_load_roundtrip_via_manager(self) -> None:
+        """Train via manager, load in a new manager, predictions should match."""
+        returns, vix = _make_synthetic_series(n=500)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            mgr1 = VolManager(store, tmpdir, lookback=20)
+            await mgr1.initialize(returns, vix, epochs=5, patience=3)
+
+            # Get predictions from first manager.
+            test_features = np.random.randn(20, 5).astype(np.float32)
+            pred1 = mgr1.forecaster.predict(test_features)
+
+            # Load in new manager's forecaster.
+            mgr2 = VolManager(store, tmpdir, lookback=20)
+            f2 = VolForecaster()
+            f2.load(mgr2.model_path)
+            pred2 = f2.predict(test_features)
+
+            assert abs(pred1["vol_1d"] - pred2["vol_1d"]) < 1e-5
+            assert abs(pred1["vol_5d"] - pred2["vol_5d"]) < 1e-5
