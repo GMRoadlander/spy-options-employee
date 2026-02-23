@@ -8,6 +8,7 @@ Tables:
     snapshots -- timestamped analysis results with key metrics + full JSON blob
     alert_cooldowns -- per-alert-type cooldown expiry timestamps
     daily_features -- daily computed ML features per ticker (Phase 3)
+    model_calibration -- Bayesian calibrator state per signal type (Phase 3)
 """
 
 import json
@@ -304,6 +305,17 @@ class Store:
         await self._db.execute("""
             CREATE INDEX IF NOT EXISTS idx_daily_features_ticker_date
             ON daily_features (ticker, date)
+        """)
+
+        # Model calibration table (Phase 3 — Bayesian calibrators)
+        await self._db.execute("""
+            CREATE TABLE IF NOT EXISTS model_calibration (
+                signal_type TEXT PRIMARY KEY,
+                alpha REAL NOT NULL DEFAULT 5.0 CHECK(alpha > 0),
+                beta REAL NOT NULL DEFAULT 5.0 CHECK(beta > 0),
+                last_signal_id INTEGER NOT NULL DEFAULT 0,
+                last_updated TEXT NOT NULL
+            )
         """)
 
         await self._db.commit()
