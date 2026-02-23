@@ -9,8 +9,14 @@ services:
     volumes:
       - ./data:/app/data
     # Phase 2: Scale to s-2vcpu-4gb ($24/mo) for backtesting workloads
+    # Phase 3: Recommend s-2vcpu-8gb ($48/mo) for ML workloads
+    #   - FinBERT model requires ~500MB RAM on first load
+    #   - PyTorch CPU requires ~200MB RAM for inference
+    #   - HMM regime + LSTM vol + anomaly detection: ~300MB
+    #   - Total estimated memory: ~2GB for bot + ML models
+    #   - FinBERT is lazy-loaded on first /sentiment or daily update
     # deploy:
     #   resources:
     #     limits:
     #       cpus: '2'
-    #       memory: 4G
+    #       memory: 8G
