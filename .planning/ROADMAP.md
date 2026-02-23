@@ -58,21 +58,23 @@
 
 ---
 
-## Phase 3: ML Intelligence Layer (~$400/mo)
+## Phase 3: ML Intelligence Layer (~$400/mo) ✅ COMPLETE
 
 **Goal**: Add ML models that make the research engine smarter. Regime detection prevents wrong-strategy-in-wrong-market. Volatility forecasting improves entry timing. Anomaly detection catches institutional flow. Sentiment adds context signals.
 
 **Deliverables**:
-- [ ] HMM regime detection (2-3 state: risk-on/risk-off/crisis) via `hmmlearn` — prevents catastrophic strategy-regime mismatches
-- [ ] LSTM volatility forecasting — predict IV changes for better entry timing, upgrade path to DeepAR for probabilistic forecasts
-- [ ] FinBERT sentiment analysis — free, CPU-only, use as regime context signal (not standalone predictor)
-- [ ] Statistical anomaly detection (z-scores on volume/OI, isolation forest on options flow features)
-- [ ] Feature store pipeline: IV rank, skew, term structure, GEX, P/C ratio, regime state, sentiment score, vol forecast → SQLite/Parquet
-- [ ] Unusual Whales Pro API ($99/mo) — flow + dark pool data
-- [ ] Polygon.io real-time OPRA feed ($199/mo) — tick-level options trades/quotes
-- [ ] Claude Agent SDK multi-agent system: analyst, risk manager, strategy researcher sub-agents (Sonnet for routine, Opus for reasoning)
-- [ ] Continuous learning — track which alerts/strategies worked, update confidence scores with Bayesian calibration
-- [ ] Scale droplet to s-2vcpu-8gb ($48/mo)
+- [x] HMM regime detection (2-3 state: risk-on/risk-off/crisis) via `hmmlearn` — prevents catastrophic strategy-regime mismatches
+- [x] LSTM volatility forecasting — predict IV changes for better entry timing, upgrade path to DeepAR for probabilistic forecasts
+- [x] FinBERT sentiment analysis — free, CPU-only, use as regime context signal (not standalone predictor)
+- [x] Statistical anomaly detection (z-scores on volume/OI, isolation forest on options flow features)
+- [x] Feature store pipeline: IV rank, skew, term structure, GEX, P/C ratio, regime state, sentiment score, vol forecast → SQLite/Parquet
+- [x] Unusual Whales Pro API ($99/mo) — flow + dark pool data
+- [x] Polygon.io real-time OPRA feed ($199/mo) — tick-level options trades/quotes
+- [x] Structured Claude reasoning engine (replaces multi-agent SDK per research — single call gives 80% of value)
+- [x] Continuous learning — track which alerts/strategies worked, update confidence scores with Bayesian calibration
+- [x] Discord ML cog with 6 slash commands + daily ML pipeline scheduling
+- [x] Scale droplet to s-2vcpu-8gb ($48/mo)
+- [x] 887 tests passing (430 new across 9 plans)
 
 **Research needed**: 🔬 HMM state count tuning (2 vs 3 vs 4), LSTM feature selection (VIX + macro variables), FinBERT deployment on droplet CPU, Agent SDK sub-agent patterns, Polygon.io WebSocket integration
 
