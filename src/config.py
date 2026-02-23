@@ -86,5 +86,9 @@ class Config:
     # ML Intelligence Layer (Phase 3)
     ml_features_dir: str = os.getenv("ML_FEATURES_DIR", "data/ml_models")
 
+    # Polygon.io (news + full market data — Phase 3+)
+    polygon_api_key: str = os.getenv("POLYGON_API_KEY", "")
+    news_lookback_hours: int = int(os.getenv("NEWS_LOOKBACK_HOURS", "24"))
+
 
 config = Config()

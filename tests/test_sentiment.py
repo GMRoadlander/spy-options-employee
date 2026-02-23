@@ -1,16 +1,18 @@
 """Tests for FinBERT sentiment scoring (src/ml/sentiment.py).
 
 All tests mock the transformers pipeline to avoid downloading the
-250 MB model in CI.  Covers scoring, batching, aggregation, edge cases.
+250 MB model in CI.  Covers scoring, batching, aggregation, edge cases,
+SentimentManager update pipeline, and news client integration.
 """
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.ml.sentiment import SentimentScorer
+from src.data.news_client import NewsClient
+from src.ml.sentiment import SentimentManager, SentimentScorer
 
 
 # ---------------------------------------------------------------------------
@@ -251,3 +253,219 @@ class TestSentimentScorerLazyLoading:
         scorer._pipeline = _make_mock_pipeline([{"label": "neutral", "score": 0.5}])
         scorer.score_batch(["Test"])
         mock_load.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Helpers — mock factories for manager tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_news_client(headlines: list[dict] | None = None) -> MagicMock:
+    """Create a mock NewsClient with async fetch_headlines."""
+    client = MagicMock(spec=NewsClient)
+    if headlines is None:
+        headlines = [
+            {"title": "Markets rally on strong data", "published": "2026-02-22T10:00:00Z", "source": "Reuters", "url": "https://example.com/1"},
+            {"title": "Fed holds rates steady", "published": "2026-02-22T09:00:00Z", "source": "Bloomberg", "url": "https://example.com/2"},
+        ]
+    client.fetch_headlines = AsyncMock(return_value=headlines)
+    return client
+
+
+def _make_mock_feature_store() -> MagicMock:
+    """Create a mock FeatureStore with async methods."""
+    store = MagicMock()
+    store.save_features = AsyncMock()
+    store.get_features = AsyncMock(return_value=None)
+    store.get_latest_features = AsyncMock(return_value=None)
+    store.get_feature_history = AsyncMock(return_value=[])
+    return store
+
+
+# ---------------------------------------------------------------------------
+# NewsClient tests
+# ---------------------------------------------------------------------------
+
+
+class TestNewsClient:
+    """NewsClient basic behaviour (mocked — no real HTTP)."""
+
+    def test_init_stores_api_key(self) -> None:
+        client = NewsClient(polygon_api_key="test-key")
+        assert client._polygon_api_key == "test-key"
+
+    def test_init_empty_key(self) -> None:
+        client = NewsClient()
+        assert client._polygon_api_key == ""
+
+    @pytest.mark.asyncio
+    async def test_fetch_headlines_no_key_returns_empty(self) -> None:
+        client = NewsClient(polygon_api_key="")
+        result = await client.fetch_headlines("SPX")
+        assert result == []
+
+    def test_rate_limit_tracking_initial(self) -> None:
+        client = NewsClient(polygon_api_key="key")
+        assert client._request_times == []
+
+
+# ---------------------------------------------------------------------------
+# SentimentManager tests
+# ---------------------------------------------------------------------------
+
+
+class TestSentimentManagerUpdate:
+    """SentimentManager.update() pipeline with mocked dependencies."""
+
+    @pytest.mark.asyncio
+    async def test_update_returns_aggregate(self) -> None:
+        scorer = _make_scorer_with_mock([
+            {"label": "positive", "score": 0.9},
+            {"label": "neutral", "score": 0.7},
+        ])
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.update("SPX")
+
+        assert result is not None
+        assert "mean_sentiment" in result
+        assert "positive_pct" in result
+        assert "count" in result
+        assert result["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_update_persists_to_feature_store(self) -> None:
+        scorer = _make_scorer_with_mock([{"label": "positive", "score": 0.85}])
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+
+        mgr = SentimentManager(scorer, news, store)
+        await mgr.update("SPX")
+
+        store.save_features.assert_called_once()
+        call_args = store.save_features.call_args
+        assert call_args[0][0] == "SPX"  # ticker
+        features = call_args[0][2]
+        assert "sentiment_score" in features
+
+    @pytest.mark.asyncio
+    async def test_update_empty_headlines_returns_none(self) -> None:
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client(headlines=[])
+        store = _make_mock_feature_store()
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.update("SPX")
+
+        assert result is None
+        store.save_features.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_velocity_computed_from_yesterday(self) -> None:
+        scorer = _make_scorer_with_mock([{"label": "positive", "score": 0.80}])
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+
+        # Yesterday had sentiment of 0.5.
+        store.get_features.return_value = {"sentiment_score": 0.5}
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.update("SPX")
+
+        assert result is not None
+        # Today: 0.80, yesterday: 0.50 → velocity = 0.30.
+        assert result["sentiment_velocity"] == pytest.approx(0.30, abs=1e-4)
+
+    @pytest.mark.asyncio
+    async def test_velocity_none_when_no_yesterday(self) -> None:
+        scorer = _make_scorer_with_mock([{"label": "positive", "score": 0.80}])
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_features.return_value = None
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.update("SPX")
+
+        assert result is not None
+        assert result["sentiment_velocity"] is None
+
+
+class TestSentimentManagerGetCurrent:
+    """SentimentManager.get_current_sentiment() reads from feature store."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_data(self) -> None:
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = None
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.get_current_sentiment("SPX")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_sentiment_from_store(self) -> None:
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "sentiment_score": 0.45,
+            "date": "2026-02-22",
+        }
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.get_current_sentiment("SPX")
+
+        assert result is not None
+        assert result["sentiment_score"] == pytest.approx(0.45)
+        assert result["date"] == "2026-02-22"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_score_is_null(self) -> None:
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "sentiment_score": None,
+            "date": "2026-02-22",
+        }
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.get_current_sentiment("SPX")
+        assert result is None
+
+
+class TestSentimentManagerGetHistory:
+    """SentimentManager.get_sentiment_history() reads time series."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_history(self) -> None:
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_feature_history.return_value = []
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.get_sentiment_history("SPX", days=30)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_history_excluding_none(self) -> None:
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_feature_history.return_value = [
+            ("2026-02-20", 0.3),
+            ("2026-02-21", None),
+            ("2026-02-22", 0.5),
+        ]
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.get_sentiment_history("SPX", days=30)
+
+        assert len(result) == 2
+        assert result[0] == {"date": "2026-02-20", "sentiment_score": 0.3}
+        assert result[1] == {"date": "2026-02-22", "sentiment_score": 0.5}
