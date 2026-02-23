@@ -7,20 +7,31 @@ functions are stateless and synchronous (no I/O).
 A convenience ``scan_chain_anomalies`` function runs all detectors on
 an :class:`OptionsChain` in one call.
 
+The module also provides:
+
+- :class:`FlowAnomalyDetector` — scikit-learn IsolationForest wrapper
+  for multi-feature anomaly detection on options flow data.
+- :class:`AnomalyManager` — async pipeline that combines z-score
+  detectors with isolation forest scoring and persists results to the
+  feature store.
+
 Phase 3-05 of the ML intelligence layer.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import pickle
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
     from src.data import OptionsChain
+    from src.ml.feature_store import FeatureStore
 
 logger = logging.getLogger(__name__)
 
@@ -386,3 +397,304 @@ def scan_chain_anomalies(
         strike_clusters=strike_clusters,
         overall_score=overall_score,
     )
+
+
+# ---------------------------------------------------------------------------
+# FlowAnomalyDetector — IsolationForest wrapper
+# ---------------------------------------------------------------------------
+
+
+class FlowAnomalyDetector:
+    """Isolation forest for multi-feature anomaly detection on options flow.
+
+    Wraps scikit-learn's :class:`~sklearn.ensemble.IsolationForest`.
+    Feature columns expected: ``[volume, oi, v_oi_ratio, iv, iv_change,
+    premium, delta, gamma, moneyness]``.
+
+    Args:
+        contamination: Expected fraction of outliers in training data.
+        n_estimators: Number of trees in the isolation forest.
+        random_state: Random seed for reproducibility.
+    """
+
+    def __init__(
+        self,
+        contamination: float = 0.05,
+        n_estimators: int = 100,
+        random_state: int = 42,
+    ) -> None:
+        from sklearn.ensemble import IsolationForest
+
+        self._model = IsolationForest(
+            contamination=contamination,
+            n_estimators=n_estimators,
+            random_state=random_state,
+        )
+        self._fitted = False
+
+    def fit(self, feature_matrix: np.ndarray) -> None:
+        """Fit the isolation forest on historical flow data.
+
+        Args:
+            feature_matrix: 2-D array of shape ``(n_samples, n_features)``.
+        """
+        self._model.fit(feature_matrix)
+        self._fitted = True
+
+    def predict(self, features: np.ndarray) -> list[dict]:
+        """Score each row for anomalousness.
+
+        Args:
+            features: 2-D array of shape ``(n_samples, n_features)``.
+
+        Returns:
+            List of dicts, one per row: ``{"is_anomaly": bool,
+            "anomaly_score": float}``.  The anomaly score comes from
+            ``decision_function()`` (lower = more anomalous).
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+        """
+        if not self._fitted:
+            raise RuntimeError("FlowAnomalyDetector has not been fitted")
+
+        labels = self._model.predict(features)
+        scores = self._model.decision_function(features)
+
+        results: list[dict] = []
+        for label, score in zip(labels, scores):
+            results.append({
+                "is_anomaly": int(label) == -1,
+                "anomaly_score": float(score),
+            })
+        return results
+
+    def save(self, path: str) -> None:
+        """Persist the fitted model to disk via pickle.
+
+        Args:
+            path: File path to write (parent directory must exist).
+
+        Raises:
+            RuntimeError: If the model has not been fitted.
+        """
+        if not self._fitted:
+            raise RuntimeError("Cannot save: FlowAnomalyDetector has not been fitted")
+
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self._model, f)
+        logger.info("Saved FlowAnomalyDetector to %s", path)
+
+    def load(self, path: str) -> None:
+        """Load a previously fitted model from disk.
+
+        Args:
+            path: File path to read.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Model file not found: {path}")
+
+        with open(path, "rb") as f:
+            self._model = pickle.load(f)  # noqa: S301
+        self._fitted = True
+        logger.info("Loaded FlowAnomalyDetector from %s", path)
+
+
+# ---------------------------------------------------------------------------
+# AnomalyManager — async pipeline
+# ---------------------------------------------------------------------------
+
+
+def _classify_score(score: float) -> str:
+    """Map overall anomaly score to severity level."""
+    if score > 0.7:
+        return "alert"
+    if score > 0.4:
+        return "elevated"
+    return "normal"
+
+
+class AnomalyManager:
+    """Async pipeline combining z-score detectors with isolation forest.
+
+    Persists the composite ``anomaly_score`` to the feature store after
+    each update cycle.
+
+    Args:
+        feature_store: An initialised :class:`FeatureStore` instance.
+        model_dir: Directory for isolation forest model artifacts.
+    """
+
+    _Z_SCORE_WEIGHT = 0.6
+    _FOREST_WEIGHT = 0.4
+
+    def __init__(self, feature_store: FeatureStore, model_dir: str) -> None:
+        self._feature_store = feature_store
+        self._model_dir = model_dir
+        self._forest: FlowAnomalyDetector | None = None
+        self._latest_report: dict[str, AnomalyReport] = {}  # keyed by ticker
+
+    @property
+    def model_path(self) -> str:
+        """Path to the persisted isolation forest model."""
+        return os.path.join(self._model_dir, "anomaly_forest.pkl")
+
+    async def update(
+        self,
+        chain: OptionsChain,
+        historical_data: dict | None,
+        ticker: str = "SPX",
+    ) -> AnomalyReport:
+        """Run z-score detectors + isolation forest and persist results.
+
+        Args:
+            chain: Current options chain snapshot.
+            historical_data: Historical data for z-score baselines.
+            ticker: Ticker symbol for feature store persistence.
+
+        Returns:
+            :class:`AnomalyReport` with composite ``overall_score``.
+        """
+        # 1. Z-score scan
+        report = scan_chain_anomalies(chain, historical_data)
+
+        z_score_raw = report.overall_score  # already 0-1
+
+        # 2. Isolation forest score (if fitted)
+        forest_raw = 0.0
+        if self._forest is not None and self._forest._fitted:
+            features = self._extract_features(chain)
+            if features is not None and len(features) > 0:
+                predictions = self._forest.predict(features)
+                # Fraction of contracts flagged anomalous
+                anomaly_count = sum(1 for p in predictions if p["is_anomaly"])
+                forest_raw = anomaly_count / len(predictions) if predictions else 0.0
+
+        # 3. Compute weighted overall score
+        if self._forest is not None and self._forest._fitted:
+            overall = (
+                self._Z_SCORE_WEIGHT * z_score_raw
+                + self._FOREST_WEIGHT * forest_raw
+            )
+        else:
+            # No isolation forest — use z-score only
+            overall = z_score_raw
+
+        overall = min(max(overall, 0.0), 1.0)
+        report.overall_score = overall
+
+        # 4. Cache report
+        self._latest_report[ticker] = report
+
+        # 5. Persist to feature store
+        today = date.today().isoformat()
+        await self._feature_store.save_features(
+            ticker, today, {"anomaly_score": overall}
+        )
+
+        logger.info(
+            "Anomaly update for %s: score=%.3f (%s)",
+            ticker,
+            overall,
+            _classify_score(overall),
+        )
+
+        return report
+
+    async def train_forest(
+        self,
+        historical_chains: list[dict],
+    ) -> dict:
+        """Fit isolation forest on historical flow data.
+
+        Each entry in *historical_chains* should be a dict with keys
+        matching the feature columns: ``volume``, ``oi``, ``v_oi_ratio``,
+        ``iv``, ``iv_change``, ``premium``, ``delta``, ``gamma``,
+        ``moneyness``.
+
+        Args:
+            historical_chains: List of dicts, one per observation.
+
+        Returns:
+            Training statistics dict.
+        """
+        if not historical_chains:
+            return {"status": "error", "reason": "no training data"}
+
+        feature_cols = [
+            "volume", "oi", "v_oi_ratio", "iv", "iv_change",
+            "premium", "delta", "gamma", "moneyness",
+        ]
+
+        rows: list[list[float]] = []
+        for entry in historical_chains:
+            row = [float(entry.get(col, 0.0)) for col in feature_cols]
+            rows.append(row)
+
+        matrix = np.array(rows, dtype=float)
+
+        self._forest = FlowAnomalyDetector()
+        self._forest.fit(matrix)
+
+        # Save to disk
+        os.makedirs(self._model_dir, exist_ok=True)
+        self._forest.save(self.model_path)
+
+        return {
+            "status": "ok",
+            "n_samples": len(rows),
+            "n_features": len(feature_cols),
+            "model_path": self.model_path,
+        }
+
+    async def get_current_anomalies(
+        self,
+        ticker: str = "SPX",
+    ) -> AnomalyReport | None:
+        """Return the most recently cached anomaly report.
+
+        Args:
+            ticker: Ticker symbol.
+
+        Returns:
+            The cached :class:`AnomalyReport`, or ``None`` if no update
+            has been run yet for this ticker.
+        """
+        return self._latest_report.get(ticker)
+
+    def _extract_features(self, chain: OptionsChain) -> np.ndarray | None:
+        """Build a feature matrix from an OptionsChain for isolation forest.
+
+        Returns:
+            2-D numpy array of shape ``(n_contracts, 9)`` or ``None``
+            if the chain is empty.
+        """
+        if not chain.contracts:
+            return None
+
+        rows: list[list[float]] = []
+        spot = chain.spot_price if chain.spot_price != 0 else 1.0
+
+        for c in chain.contracts:
+            oi = c.open_interest if c.open_interest > 0 else 1
+            v_oi = c.volume / oi
+            premium = c.mid * 100.0  # approximate notional
+            moneyness = c.strike / spot
+
+            rows.append([
+                float(c.volume),
+                float(c.open_interest),
+                float(v_oi),
+                float(c.iv),
+                0.0,  # iv_change — not available in a single snapshot
+                float(premium),
+                float(c.delta),
+                float(c.gamma),
+                float(moneyness),
+            ])
+
+        return np.array(rows, dtype=float)

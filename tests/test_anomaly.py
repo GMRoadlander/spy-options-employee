@@ -1,20 +1,26 @@
 """Tests for statistical anomaly detection (src/ml/anomaly.py).
 
 Covers z-score detectors for volume, IV, V/OI, and strike clustering,
-plus the AnomalyReport dataclass and scan_chain_anomalies convenience
-function.
+the AnomalyReport dataclass, scan_chain_anomalies convenience function,
+FlowAnomalyDetector (IsolationForest), and AnomalyManager pipeline.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
 from datetime import date, datetime, timedelta
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
 from src.data import OptionContract, OptionsChain
 from src.ml.anomaly import (
+    AnomalyManager,
     AnomalyReport,
+    FlowAnomalyDetector,
+    _classify_score,
     detect_iv_anomaly,
     detect_strike_clustering,
     detect_volume_anomaly,
@@ -419,3 +425,337 @@ class TestScanChainAnomalies:
         report = scan_chain_anomalies(chain, historical_data)
         assert report.overall_score == 0.0
         assert report.volume_anomalies == []
+
+
+# ===================================================================
+# FlowAnomalyDetector
+# ===================================================================
+
+
+def _make_synthetic_data(n_normal: int = 200, n_outliers: int = 10, seed: int = 42):
+    """Generate synthetic flow data with known outliers."""
+    rng = np.random.RandomState(seed)
+    # Normal data: centred around moderate values
+    normal = rng.normal(
+        loc=[500, 1000, 0.5, 0.20, 0.0, 5000, 0.50, 0.01, 1.0],
+        scale=[100, 200, 0.1, 0.02, 0.005, 1000, 0.10, 0.005, 0.05],
+        size=(n_normal, 9),
+    )
+    # Outliers: extreme values
+    outliers = rng.normal(
+        loc=[50000, 100, 50.0, 0.80, 0.3, 500000, 0.99, 0.10, 2.0],
+        scale=[5000, 10, 5.0, 0.05, 0.05, 50000, 0.01, 0.01, 0.1],
+        size=(n_outliers, 9),
+    )
+    data = np.vstack([normal, outliers])
+    labels = np.array([1] * n_normal + [-1] * n_outliers)
+    return data, labels
+
+
+class TestFlowAnomalyDetector:
+    """Tests for IsolationForest-based anomaly detection."""
+
+    def test_fit_predict_basic(self):
+        """Detector can fit and predict on synthetic data."""
+        data, _labels = _make_synthetic_data()
+        det = FlowAnomalyDetector(contamination=0.05)
+        det.fit(data)
+        results = det.predict(data)
+
+        assert len(results) == len(data)
+        assert all("is_anomaly" in r for r in results)
+        assert all("anomaly_score" in r for r in results)
+
+    def test_detects_known_outliers(self):
+        """Most known outliers should be flagged as anomalous."""
+        data, labels = _make_synthetic_data(n_normal=200, n_outliers=20)
+        det = FlowAnomalyDetector(contamination=0.10)
+        det.fit(data)
+        results = det.predict(data)
+
+        # Check the last 20 (outlier) rows
+        outlier_results = results[-20:]
+        flagged = sum(1 for r in outlier_results if r["is_anomaly"])
+        # At least half the outliers should be detected
+        assert flagged >= 10, f"Only {flagged}/20 outliers detected"
+
+    def test_normal_data_mostly_not_anomalous(self):
+        """Normal data should rarely be flagged."""
+        data, _labels = _make_synthetic_data()
+        det = FlowAnomalyDetector(contamination=0.05)
+        det.fit(data)
+        results = det.predict(data[:200])  # only normal data
+
+        flagged = sum(1 for r in results if r["is_anomaly"])
+        # Expect <15% false positives on normal data
+        assert flagged < 30, f"{flagged}/200 normal points flagged"
+
+    def test_predict_unfitted_raises(self):
+        """Predict on unfitted detector raises RuntimeError."""
+        det = FlowAnomalyDetector()
+        data, _ = _make_synthetic_data()
+        with pytest.raises(RuntimeError, match="not been fitted"):
+            det.predict(data)
+
+    def test_save_load_roundtrip(self):
+        """Save/load preserves model predictions."""
+        data, _ = _make_synthetic_data()
+        det = FlowAnomalyDetector()
+        det.fit(data)
+        pred_before = det.predict(data[:5])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "model.pkl")
+            det.save(path)
+            assert os.path.exists(path)
+
+            det2 = FlowAnomalyDetector()
+            det2.load(path)
+            pred_after = det2.predict(data[:5])
+
+        for a, b in zip(pred_before, pred_after):
+            assert a["is_anomaly"] == b["is_anomaly"]
+            assert a["anomaly_score"] == pytest.approx(b["anomaly_score"])
+
+    def test_save_unfitted_raises(self):
+        """Saving unfitted detector raises RuntimeError."""
+        det = FlowAnomalyDetector()
+        with pytest.raises(RuntimeError, match="not been fitted"):
+            det.save("/tmp/should_not_exist.pkl")
+
+    def test_load_nonexistent_raises(self):
+        """Loading from nonexistent path raises FileNotFoundError."""
+        det = FlowAnomalyDetector()
+        with pytest.raises(FileNotFoundError):
+            det.load("/tmp/nonexistent_anomaly_model_xyz.pkl")
+
+
+# ===================================================================
+# _classify_score helper
+# ===================================================================
+
+
+class TestClassifyScore:
+    """Tests for score classification."""
+
+    def test_alert(self):
+        assert _classify_score(0.8) == "alert"
+        assert _classify_score(0.71) == "alert"
+
+    def test_elevated(self):
+        assert _classify_score(0.5) == "elevated"
+        assert _classify_score(0.41) == "elevated"
+        assert _classify_score(0.7) == "elevated"
+
+    def test_normal(self):
+        assert _classify_score(0.3) == "normal"
+        assert _classify_score(0.0) == "normal"
+        assert _classify_score(0.4) == "normal"
+
+
+# ===================================================================
+# AnomalyManager
+# ===================================================================
+
+
+def _make_mock_feature_store() -> MagicMock:
+    """Create a mock FeatureStore with async methods."""
+    store = MagicMock()
+    store.save_features = AsyncMock()
+    store.get_latest_features = AsyncMock(return_value=None)
+    return store
+
+
+class TestAnomalyManagerUpdate:
+    """Tests for AnomalyManager.update()."""
+
+    @pytest.mark.asyncio
+    async def test_update_without_forest(self):
+        """Manager works without a fitted isolation forest (z-scores only)."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [
+                _make_contract(5000, "call", volume=100, open_interest=1000, iv=0.20),
+            ]
+            chain = _make_chain(contracts)
+            historical_data = {
+                "volume_history": {5000.0: [90, 100, 110, 95, 105]},
+                "iv_history": {5000.0: [0.19, 0.20, 0.21, 0.19, 0.20]},
+                "voi_history": [0.1, 0.12, 0.09, 0.11, 0.10],
+            }
+
+            report = await mgr.update(chain, historical_data, ticker="SPX")
+
+            assert isinstance(report, AnomalyReport)
+            assert 0.0 <= report.overall_score <= 1.0
+            store.save_features.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_update_persists_anomaly_score(self):
+        """Update persists anomaly_score to feature store."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [
+                _make_contract(5000, "call", volume=100, open_interest=1000, iv=0.20),
+            ]
+            chain = _make_chain(contracts)
+
+            await mgr.update(chain, None, ticker="SPX")
+
+            call_args = store.save_features.call_args
+            assert call_args[0][0] == "SPX"  # ticker
+            features = call_args[0][2]
+            assert "anomaly_score" in features
+
+    @pytest.mark.asyncio
+    async def test_update_with_forest(self):
+        """Manager combines z-score and forest scores when forest is fitted."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            # Train forest on synthetic data
+            training_data = []
+            rng = np.random.RandomState(42)
+            for _ in range(100):
+                training_data.append({
+                    "volume": float(rng.normal(500, 100)),
+                    "oi": float(rng.normal(1000, 200)),
+                    "v_oi_ratio": float(rng.normal(0.5, 0.1)),
+                    "iv": float(rng.normal(0.20, 0.02)),
+                    "iv_change": float(rng.normal(0, 0.005)),
+                    "premium": float(rng.normal(5000, 1000)),
+                    "delta": float(rng.normal(0.50, 0.10)),
+                    "gamma": float(rng.normal(0.01, 0.005)),
+                    "moneyness": float(rng.normal(1.0, 0.05)),
+                })
+            await mgr.train_forest(training_data)
+
+            # Now update with a chain
+            contracts = [
+                _make_contract(5000, "call", volume=100, open_interest=1000, iv=0.20),
+            ]
+            chain = _make_chain(contracts)
+            historical_data = {
+                "volume_history": {5000.0: [90, 100, 110, 95, 105]},
+                "iv_history": {5000.0: [0.19, 0.20, 0.21, 0.19, 0.20]},
+                "voi_history": [0.1, 0.12, 0.09, 0.11, 0.10],
+            }
+
+            report = await mgr.update(chain, historical_data)
+            assert isinstance(report, AnomalyReport)
+            assert 0.0 <= report.overall_score <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_update_caches_report(self):
+        """Update caches the latest report."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [_make_contract(5000, "call")]
+            chain = _make_chain(contracts)
+
+            await mgr.update(chain, None, ticker="SPX")
+
+            cached = await mgr.get_current_anomalies(ticker="SPX")
+            assert cached is not None
+            assert isinstance(cached, AnomalyReport)
+
+
+class TestAnomalyManagerTrainForest:
+    """Tests for AnomalyManager.train_forest()."""
+
+    @pytest.mark.asyncio
+    async def test_train_forest_basic(self):
+        """Training returns success stats."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            training_data = []
+            for i in range(50):
+                training_data.append({
+                    "volume": 500.0 + i,
+                    "oi": 1000.0,
+                    "v_oi_ratio": 0.5,
+                    "iv": 0.20,
+                    "iv_change": 0.0,
+                    "premium": 5000.0,
+                    "delta": 0.50,
+                    "gamma": 0.01,
+                    "moneyness": 1.0,
+                })
+
+            result = await mgr.train_forest(training_data)
+
+            assert result["status"] == "ok"
+            assert result["n_samples"] == 50
+            assert result["n_features"] == 9
+            assert os.path.exists(result["model_path"])
+
+    @pytest.mark.asyncio
+    async def test_train_forest_empty_data(self):
+        """Training with empty data returns error."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+            result = await mgr.train_forest([])
+            assert result["status"] == "error"
+
+
+class TestAnomalyManagerGetCurrentAnomalies:
+    """Tests for AnomalyManager.get_current_anomalies()."""
+
+    @pytest.mark.asyncio
+    async def test_returns_none_before_update(self):
+        """Returns None when no update has been run."""
+        store = _make_mock_feature_store()
+        mgr = AnomalyManager(store, "/tmp")
+        result = await mgr.get_current_anomalies("SPX")
+        assert result is None
+
+
+class TestOverallScoreComputation:
+    """Tests for overall score computation with weights."""
+
+    @pytest.mark.asyncio
+    async def test_score_without_forest_equals_zscore(self):
+        """Without forest, overall score equals z-score scan score."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            # Create a chain with known anomalous activity
+            contracts = [
+                _make_contract(5000, "call", volume=99999, open_interest=100, iv=0.80),
+            ]
+            chain = _make_chain(contracts)
+            historical_data = {
+                "volume_history": {5000.0: [100, 102, 98, 101, 99]},
+                "iv_history": {5000.0: [0.19, 0.20, 0.21, 0.19, 0.20]},
+                "voi_history": [0.1, 0.12, 0.09, 0.11, 0.10],
+            }
+
+            report = await mgr.update(chain, historical_data)
+
+            # Without forest, overall_score = z_score_raw
+            z_report = scan_chain_anomalies(chain, historical_data)
+            assert report.overall_score == pytest.approx(z_report.overall_score)
+
+    @pytest.mark.asyncio
+    async def test_score_bounded_0_1(self):
+        """Overall score is always in [0, 1]."""
+        store = _make_mock_feature_store()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = AnomalyManager(store, tmpdir)
+
+            contracts = [_make_contract(5000, "call")]
+            chain = _make_chain(contracts)
+
+            report = await mgr.update(chain, None)
+            assert 0.0 <= report.overall_score <= 1.0
