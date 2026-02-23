@@ -8,7 +8,7 @@ Builds rich embeds with color coding:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 
@@ -435,7 +435,7 @@ def build_status_embed(
         title="SPY Options Employee -- Status",
         description="System health and data source status",
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     embed.add_field(
@@ -483,7 +483,7 @@ def build_dashboard_embed(
     embed = discord.Embed(
         title="Market Dashboard Update",
         color=COLOR_INFO,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     if commentary:
@@ -576,7 +576,7 @@ def build_alert_embed(
         title=f"ALERT: {title}",
         description=description,
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     for name, value in fields.items():
@@ -620,7 +620,7 @@ def build_tradingview_alert_embed(alert: "TradingViewAlert") -> discord.Embed:
         title=f"TradingView Alert -- {alert.ticker}",
         description=alert.message or f"Action: **{alert.action}**",
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     embed.add_field(name="Action", value=alert.action, inline=True)
@@ -676,7 +676,7 @@ def build_flow_alert_embed(flow: dict) -> discord.Embed:
         title=f"Flow Alert -- {flow.get('ticker', '???')}{sweep_tag}",
         description=f"{side} {flow.get('strike', '?')} {flow.get('expiry', '?')}",
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     if flow.get("premium") is not None:
@@ -725,7 +725,7 @@ def build_strategy_define_embed(
         title=title,
         description=explanation if explanation else template.description,
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     # Structure
@@ -805,7 +805,7 @@ def build_strategy_list_embed(
         title=f"Strategies{filter_text}",
         description=f"{len(strategies)} strategies found",
         color=COLOR_INFO,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     if not strategies:
@@ -866,7 +866,7 @@ def build_strategy_detail_embed(
         title=f"Strategy #{strategy['id']} -- {strategy['name']}",
         description=f"Status: **{strategy['status'].title()}**",
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     # Show YAML snippet (truncated for Discord)
@@ -945,7 +945,7 @@ def build_backtest_result_embed(
         title=f"Backtest Results -- {strategy_name}",
         description=f"Recommendation: **{recommendation}**",
         color=color,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     # Key metrics
@@ -1024,7 +1024,7 @@ def build_backtest_progress_embed(
         title=f"Backtest In Progress -- {strategy_name}",
         description=status_message,
         color=COLOR_INFO,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     embed.set_footer(text="SPY Options Employee | Backtest")
     return embed
@@ -1056,7 +1056,7 @@ def build_daily_summary_embed(
         title=f"Daily Journal -- {date}",
         description="End-of-day trading summary",
         color=COLOR_INFO,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     # Signals
@@ -1129,7 +1129,7 @@ def build_weekly_review_embed(
         title=f"Weekly Review -- {start_date} to {end_date}",
         description="Weekly trading performance summary",
         color=COLOR_INFO,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     # Signals section
@@ -1196,11 +1196,466 @@ def build_rating_confirmation_embed(
         title=f"Signal #{signal_id} Rated",
         description=f"Rating: **{stars}** ({rating}/5)",
         color=COLOR_BULLISH if rating >= 4 else COLOR_NEUTRAL if rating >= 3 else COLOR_BEARISH,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     if notes:
         embed.add_field(name="Notes", value=notes, inline=False)
 
     embed.set_footer(text="SPY Options Employee | Journal")
+    return embed
+
+
+# -- ML Intelligence Layer embeds (Phase 3) -----------------------------------
+
+
+# Regime state color mapping
+_REGIME_COLORS: dict[str, int] = {
+    "risk-on": COLOR_BULLISH,
+    "risk-off": COLOR_NEUTRAL,
+    "crisis": COLOR_BEARISH,
+}
+
+
+def build_regime_embed(regime_data: dict) -> discord.Embed:
+    """Build an embed for the current market regime state.
+
+    Args:
+        regime_data: Dict with ``state_name``, ``regime_probability``,
+            and optionally ``expected_duration`` and ``transition_matrix``.
+
+    Returns:
+        Discord Embed with regime state info.
+    """
+    state_name = regime_data.get("state_name", "unknown")
+    probability = regime_data.get("regime_probability", 0.0)
+    color = _REGIME_COLORS.get(state_name, COLOR_INFO)
+
+    embed = discord.Embed(
+        title="Market Regime",
+        description=f"Current regime: **{state_name.upper()}**",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="State",
+        value=state_name.replace("-", " ").title(),
+        inline=True,
+    )
+    embed.add_field(
+        name="Probability",
+        value=f"{probability:.1%}",
+        inline=True,
+    )
+
+    # Expected duration (if available from predict())
+    expected_duration = regime_data.get("expected_duration", {})
+    if expected_duration:
+        dur_lines = [f"{k}: {v:.1f} days" for k, v in expected_duration.items()]
+        embed.add_field(
+            name="Expected Duration",
+            value="\n".join(dur_lines),
+            inline=False,
+        )
+
+    # Transition matrix summary
+    transmat = regime_data.get("transition_matrix")
+    if transmat is not None:
+        try:
+            import numpy as np
+            mat = np.array(transmat)
+            mat_lines = []
+            n = mat.shape[0]
+            state_labels = ["risk-on", "risk-off", "crisis"][:n]
+            for i, row_label in enumerate(state_labels):
+                probs = " ".join(f"{mat[i, j]:.2f}" for j in range(n))
+                mat_lines.append(f"{row_label}: [{probs}]")
+            embed.add_field(
+                name="Transition Probabilities",
+                value="```\n" + "\n".join(mat_lines) + "\n```",
+                inline=False,
+            )
+        except Exception:
+            pass
+
+    embed.set_footer(text="SPY Options Employee | Regime")
+    return embed
+
+
+def build_forecast_embed(forecast: dict, features: dict | None = None) -> discord.Embed:
+    """Build an embed for volatility forecast data.
+
+    Args:
+        forecast: Dict with ``vol_forecast_1d``, ``vol_forecast_5d``.
+        features: Optional dict with ``iv_rank``, ``rv_iv_spread``, ``hurst_exponent``.
+
+    Returns:
+        Discord Embed with vol forecast and interpretation.
+    """
+    vol_1d = forecast.get("vol_forecast_1d", 0.0)
+    vol_5d = forecast.get("vol_forecast_5d", 0.0)
+
+    # Color based on vol level
+    if vol_1d is not None and vol_1d > 0.25:
+        color = COLOR_BEARISH  # High vol
+    elif vol_1d is not None and vol_1d > 0.15:
+        color = COLOR_NEUTRAL
+    else:
+        color = COLOR_BULLISH
+
+    embed = discord.Embed(
+        title="Volatility Forecast",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="1-Day Forecast",
+        value=f"{vol_1d:.4f}" if vol_1d is not None else "N/A",
+        inline=True,
+    )
+    embed.add_field(
+        name="5-Day Forecast",
+        value=f"{vol_5d:.4f}" if vol_5d is not None else "N/A",
+        inline=True,
+    )
+
+    # Additional features if available
+    if features:
+        iv_rank = features.get("iv_rank")
+        rv_iv_spread = features.get("rv_iv_spread")
+        hurst = features.get("hurst_exponent")
+
+        if iv_rank is not None:
+            embed.add_field(name="IV Rank", value=f"{iv_rank:.1f}", inline=True)
+        if rv_iv_spread is not None:
+            embed.add_field(
+                name="RV/IV Spread",
+                value=f"{rv_iv_spread:.4f}",
+                inline=True,
+            )
+        if hurst is not None:
+            embed.add_field(name="Hurst Exponent", value=f"{hurst:.3f}", inline=True)
+
+    # Interpretation
+    if iv_rank is not None if features else False:
+        iv_r = features["iv_rank"]
+        if rv_iv_spread is not None:
+            spread = features["rv_iv_spread"]
+            if spread < -0.02:
+                pricing = "overpriced"
+            elif spread > 0.02:
+                pricing = "underpriced"
+            else:
+                pricing = "fair"
+        else:
+            pricing = "unknown"
+
+        if iv_r > 50:
+            timing = "favorable"
+        else:
+            timing = "unfavorable"
+
+        embed.add_field(
+            name="Interpretation",
+            value=f"Vol is **{pricing}**. Entry timing **{timing}** for premium selling.",
+            inline=False,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Volatility")
+    return embed
+
+
+def build_sentiment_embed(sentiment: dict) -> discord.Embed:
+    """Build an embed for market sentiment data.
+
+    Args:
+        sentiment: Dict with ``sentiment_score`` and optionally
+            ``velocity``, ``positive_pct``, ``negative_pct``, ``neutral_pct``,
+            ``volume_pcr``.
+
+    Returns:
+        Discord Embed with sentiment breakdown.
+    """
+    score = sentiment.get("sentiment_score", 0.0)
+
+    if score > 0.3:
+        color = COLOR_BULLISH
+    elif score < -0.3:
+        color = COLOR_BEARISH
+    else:
+        color = COLOR_NEUTRAL
+
+    embed = discord.Embed(
+        title="Market Sentiment",
+        description=f"Composite score: **{score:+.3f}**",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="Sentiment Score",
+        value=f"{score:+.3f} (range: -1 to +1)",
+        inline=True,
+    )
+
+    velocity = sentiment.get("velocity", 0.0)
+    if velocity is not None:
+        direction = "accelerating" if velocity > 0 else "decelerating" if velocity < 0 else "flat"
+        embed.add_field(
+            name="Velocity",
+            value=f"{velocity:+.3f} ({direction})",
+            inline=True,
+        )
+
+    # Breakdown percentages
+    pos = sentiment.get("positive_pct")
+    neg = sentiment.get("negative_pct")
+    neu = sentiment.get("neutral_pct")
+    if pos is not None:
+        embed.add_field(
+            name="Breakdown",
+            value=f"Positive: {pos:.0%}\nNegative: {neg:.0%}\nNeutral: {neu:.0%}",
+            inline=True,
+        )
+
+    # Contrarian signal
+    pcr = sentiment.get("volume_pcr", 0.0)
+    if abs(score) > 0.6 and pcr is not None and pcr > 1.2:
+        embed.add_field(
+            name="CONTRARIAN SIGNAL",
+            value="Extreme sentiment + high PCR detected. Contrarian reversal may be imminent.",
+            inline=False,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Sentiment")
+    return embed
+
+
+def build_anomaly_embed(report: "AnomalyReport") -> discord.Embed:
+    """Build an embed for anomaly detection results.
+
+    Args:
+        report: An :class:`AnomalyReport` dataclass instance.
+
+    Returns:
+        Discord Embed with anomaly flags and score.
+    """
+    score = report.overall_score
+
+    if score < 0.4:
+        color = COLOR_BULLISH
+        level = "LOW"
+    elif score < 0.7:
+        color = COLOR_NEUTRAL
+        level = "MEDIUM"
+    else:
+        color = COLOR_BEARISH
+        level = "HIGH"
+
+    embed = discord.Embed(
+        title="Anomaly Detection Scan",
+        description=f"Overall anomaly score: **{score:.3f}** [{level}]",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    embed.add_field(
+        name="Overall Score",
+        value=f"{score:.3f}",
+        inline=True,
+    )
+
+    # Top anomaly flags
+    anomaly_flags = []
+    if report.volume_anomalies:
+        for a in report.volume_anomalies[:3]:
+            anomaly_flags.append(f"Volume: z={a.get('z_score', 0):.1f}")
+    if report.iv_anomalies:
+        for a in report.iv_anomalies[:3]:
+            anomaly_flags.append(f"IV: z={a.get('z_score', 0):.1f}")
+    if report.voi_anomalies:
+        for a in report.voi_anomalies[:2]:
+            anomaly_flags.append(f"V/OI: z={a.get('z_score', 0):.1f}")
+
+    embed.add_field(
+        name="Top Anomaly Flags",
+        value="\n".join(anomaly_flags) if anomaly_flags else "No anomalies detected",
+        inline=False,
+    )
+
+    # Strike clusters
+    if report.strike_clusters:
+        cluster_lines = []
+        for c in report.strike_clusters[:5]:
+            strike = c.get("strike", "?")
+            vol_pct = c.get("volume_share", 0)
+            cluster_lines.append(f"${strike}: {vol_pct:.1%} of volume")
+        embed.add_field(
+            name="Top Strike Clusters",
+            value="\n".join(cluster_lines),
+            inline=False,
+        )
+
+    # Flow summary if available
+    if report.flow_anomalies:
+        flow_lines = []
+        for f in report.flow_anomalies[:3]:
+            flag_type = f.get("type", "unknown")
+            detail = f.get("detail", "")
+            flow_lines.append(f"[{flag_type.upper()}] {detail}")
+        embed.add_field(
+            name="Flow Signals",
+            value="\n".join(flow_lines) if flow_lines else "No flow data",
+            inline=False,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Anomaly")
+    return embed
+
+
+def build_reasoning_embed(analysis: dict) -> discord.Embed:
+    """Build an embed for Claude reasoning analysis results.
+
+    Args:
+        analysis: Structured analysis dict from ReasoningEngine with keys
+            like ``summary``, ``regime_assessment``, ``vol_outlook``,
+            ``signal_conflicts``, ``strategy_recommendations``, ``risk_warnings``.
+
+    Returns:
+        Discord Embed with reasoning analysis summary.
+    """
+    embed = discord.Embed(
+        title="ML Reasoning Analysis",
+        description=analysis.get("summary", "No summary available."),
+        color=COLOR_INFO,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    regime_assessment = analysis.get("regime_assessment", "")
+    if regime_assessment:
+        embed.add_field(
+            name="Regime Assessment",
+            value=str(regime_assessment)[:1024],
+            inline=False,
+        )
+
+    vol_outlook = analysis.get("vol_outlook", "")
+    if vol_outlook:
+        embed.add_field(
+            name="Volatility Outlook",
+            value=str(vol_outlook)[:1024],
+            inline=False,
+        )
+
+    conflicts = analysis.get("signal_conflicts", [])
+    if conflicts:
+        if isinstance(conflicts, list):
+            conflicts_text = "\n".join(f"- {c}" for c in conflicts[:5])
+        else:
+            conflicts_text = str(conflicts)[:1024]
+        embed.add_field(
+            name="Signal Conflicts",
+            value=conflicts_text,
+            inline=False,
+        )
+
+    recs = analysis.get("strategy_recommendations", [])
+    if recs:
+        if isinstance(recs, list):
+            recs_text = "\n".join(f"- {r}" for r in recs[:5])
+        else:
+            recs_text = str(recs)[:1024]
+        embed.add_field(
+            name="Strategy Recommendations",
+            value=recs_text,
+            inline=False,
+        )
+
+    warnings = analysis.get("risk_warnings", [])
+    if warnings:
+        if isinstance(warnings, list):
+            warnings_text = "\n".join(f"- {w}" for w in warnings[:5])
+        else:
+            warnings_text = str(warnings)[:1024]
+        embed.add_field(
+            name="Risk Warnings",
+            value=warnings_text,
+            inline=False,
+        )
+
+    embed.set_footer(text="SPY Options Employee | Reasoning (~$0.01-0.03)")
+    return embed
+
+
+def build_ml_health_embed(health: dict) -> discord.Embed:
+    """Build an embed for ML model health dashboard.
+
+    Args:
+        health: Dict from LearningManager.get_model_health() with keys
+            ``accuracy_7d``, ``accuracy_30d``, ``trend``, ``calibrators``.
+
+    Returns:
+        Discord Embed with model health metrics.
+    """
+    trend = health.get("trend", "unknown")
+    if trend == "improving":
+        color = COLOR_BULLISH
+    elif trend == "degrading":
+        color = COLOR_BEARISH
+    elif trend == "stable":
+        color = COLOR_NEUTRAL
+    else:
+        color = COLOR_INFO
+
+    embed = discord.Embed(
+        title="ML Model Health Dashboard",
+        description=f"Overall trend: **{trend.upper()}**",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Accuracy metrics
+    acc_7d = health.get("accuracy_7d", {})
+    acc_30d = health.get("accuracy_30d", {})
+
+    embed.add_field(
+        name="7-Day Accuracy",
+        value=(
+            f"{acc_7d.get('accuracy', 0):.1%} ({acc_7d.get('total', 0)} signals)"
+            if acc_7d.get("total", 0) > 0
+            else "Insufficient data"
+        ),
+        inline=True,
+    )
+    embed.add_field(
+        name="30-Day Accuracy",
+        value=(
+            f"{acc_30d.get('accuracy', 0):.1%} ({acc_30d.get('total', 0)} signals)"
+            if acc_30d.get("total", 0) > 0
+            else "Insufficient data"
+        ),
+        inline=True,
+    )
+    embed.add_field(name="Trend", value=trend.title(), inline=True)
+
+    # Calibrator status
+    calibrators = health.get("calibrators", {})
+    if calibrators:
+        cal_lines = []
+        for signal_type, cal_data in calibrators.items():
+            confidence = cal_data.get("confidence", 0)
+            interval = cal_data.get("credible_interval", (0, 0))
+            cal_lines.append(
+                f"**{signal_type}**: {confidence:.1%} "
+                f"[{interval[0]:.2f}-{interval[1]:.2f}]"
+            )
+        embed.add_field(
+            name="Calibrated Confidence",
+            value="\n".join(cal_lines) if cal_lines else "No calibrators",
+            inline=False,
+        )
+
+    embed.set_footer(text="SPY Options Employee | ML Health")
     return embed

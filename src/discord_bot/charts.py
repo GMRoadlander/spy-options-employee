@@ -8,19 +8,23 @@ CRITICAL: Always calls plt.close(fig) after saving to prevent memory leaks.
 
 import io
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import discord
 import matplotlib
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
-import numpy as np
 
-from src.analysis.gex import GEXResult
-from src.analysis.max_pain import MaxPainResult
-
-# Use non-interactive backend (required for headless/bot environments)
+# Use non-interactive backend BEFORE importing pyplot (required for headless/bot)
 matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker as mticker  # noqa: E402
+import numpy as np  # noqa: E402
+
+from src.analysis.gex import GEXResult  # noqa: E402
+from src.analysis.max_pain import MaxPainResult  # noqa: E402
+
+# Set dark style once at module level (W13: avoid per-function duplication)
+plt.style.use("dark_background")
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +68,6 @@ def create_gex_chart(gex: GEXResult, ticker: str) -> discord.File | None:
         return None
 
     try:
-        plt.style.use("dark_background")
-
         strikes = np.array(gex.strikes)
         call_gex_vals = np.array(gex.call_gex)
         put_gex_vals = np.array(gex.put_gex)
@@ -160,7 +162,7 @@ def create_gex_chart(gex: GEXResult, ticker: str) -> discord.File | None:
         plt.xticks(rotation=45, ha="right", fontsize=8)
         plt.tight_layout()
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return _save_to_discord_file(fig, f"gex_{ticker}_{timestamp}.png")
 
     except Exception as exc:
@@ -190,8 +192,6 @@ def create_max_pain_chart(max_pain: MaxPainResult, ticker: str) -> discord.File 
         return None
 
     try:
-        plt.style.use("dark_background")
-
         # Sort by strike price
         sorted_strikes = sorted(max_pain.pain_by_strike.keys())
         pain_values = [max_pain.pain_by_strike[k] for k in sorted_strikes]
@@ -263,7 +263,7 @@ def create_max_pain_chart(max_pain: MaxPainResult, ticker: str) -> discord.File 
         plt.xticks(rotation=45, ha="right", fontsize=8)
         plt.tight_layout()
 
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return _save_to_discord_file(fig, f"maxpain_{ticker}_{timestamp}.png")
 
     except Exception as exc:
@@ -320,7 +320,6 @@ def draw_equity_curve(
         return None
 
     try:
-        plt.style.use("dark_background")
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), height_ratios=[3, 1], sharex=True)
 
         # Equity curve
@@ -342,7 +341,7 @@ def draw_equity_curve(
         ax2.legend(loc="lower left", fontsize=9, framealpha=0.7)
 
         plt.tight_layout()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return _save_to_discord_file(fig, f"equity_{strategy_name}_{timestamp}.png")
 
     except Exception as exc:
@@ -369,7 +368,6 @@ def draw_monte_carlo_fan(
         return None
 
     try:
-        plt.style.use("dark_background")
         fig, ax = plt.subplots(figsize=(14, 7))
 
         n_steps = paths.shape[1]
@@ -398,7 +396,7 @@ def draw_monte_carlo_fan(
         ax.legend(loc="upper left", fontsize=9, framealpha=0.7)
 
         plt.tight_layout()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return _save_to_discord_file(fig, f"mc_fan_{strategy_name}_{timestamp}.png")
 
     except Exception as exc:
@@ -426,7 +424,6 @@ def draw_wfa_windows(
         return None
 
     try:
-        plt.style.use("dark_background")
         fig, ax = plt.subplots(figsize=(12, 6))
 
         n_windows = len(is_sharpes)
@@ -445,7 +442,7 @@ def draw_wfa_windows(
         ax.legend(fontsize=10, framealpha=0.7)
 
         plt.tight_layout()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return _save_to_discord_file(fig, f"wfa_{strategy_name}_{timestamp}.png")
 
     except Exception as exc:
@@ -470,7 +467,6 @@ def draw_strategy_comparison(
         return None
 
     try:
-        plt.style.use("dark_background")
         fig, ax = plt.subplots(figsize=(12, 6))
 
         categories = ["Sharpe", "Sortino", "Win Rate", "Profit Factor"]
@@ -480,7 +476,9 @@ def draw_strategy_comparison(
         x = np.arange(n_cats)
         width = 0.8 / n_strategies
 
-        colors = ["#0099ff", "#00ff00", "#ffff00", "#ff6600"][:n_strategies]
+        base_colors = ["#0099ff", "#00ff00", "#ffff00", "#ff6600"]
+        # Cycle colors for >4 strategies to avoid IndexError (W11)
+        colors = [base_colors[i % len(base_colors)] for i in range(n_strategies)]
 
         for i, m in enumerate(metrics_list):
             values = [
@@ -501,10 +499,98 @@ def draw_strategy_comparison(
         ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
 
         plt.tight_layout()
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return _save_to_discord_file(fig, f"comparison_{timestamp}.png")
 
     except Exception as exc:
         logger.error("Failed to create comparison chart: %s", exc, exc_info=True)
+        plt.close("all")
+        return None
+
+
+# -- ML Intelligence Layer charts (Phase 3) ------------------------------------
+
+# Regime state colors for the timeline chart
+_REGIME_CHART_COLORS: dict[str, str] = {
+    "risk-on": "#00ff00",
+    "risk-off": "#ffff00",
+    "crisis": "#ff0000",
+    "unknown": "#666666",
+}
+
+
+def create_regime_timeline_chart(
+    regime_history: list[dict],
+    days: int = 30,
+) -> io.BytesIO | None:
+    """Create a horizontal bar chart showing regime states over time.
+
+    Each day is shown as a colored bar: green for risk-on, yellow for
+    risk-off, red for crisis.
+
+    Args:
+        regime_history: List of dicts with ``date`` and ``state_name`` keys,
+            ordered oldest-first.
+        days: Maximum number of days to display.
+
+    Returns:
+        BytesIO buffer containing the PNG chart, or None if no data.
+    """
+    if not regime_history:
+        return None
+
+    # Limit to requested days
+    history = regime_history[-days:]
+
+    try:
+        dates = [h.get("date", "") for h in history]
+        states = [h.get("state_name", "unknown") for h in history]
+        colors = [_REGIME_CHART_COLORS.get(s, "#666666") for s in states]
+
+        fig, ax = plt.subplots(figsize=(14, 4))
+
+        # Horizontal bar chart: each date gets a bar of height 1
+        y_positions = range(len(dates))
+        ax.barh(
+            y_positions,
+            [1] * len(dates),
+            color=colors,
+            edgecolor="none",
+            height=0.8,
+        )
+
+        # Y-axis labels (dates)
+        ax.set_yticks(list(y_positions))
+        # Show every Nth label to avoid clutter
+        n_labels = min(15, len(dates))
+        step = max(1, len(dates) // n_labels)
+        labels = [dates[i] if i % step == 0 else "" for i in range(len(dates))]
+        ax.set_yticklabels(labels, fontsize=8)
+
+        ax.set_xlim(0, 1)
+        ax.set_xticks([])
+        ax.set_title("Market Regime Timeline", fontsize=14, fontweight="bold")
+        ax.invert_yaxis()  # Most recent at top
+
+        # Legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor="#00ff00", label="Risk-On"),
+            Patch(facecolor="#ffff00", label="Risk-Off"),
+            Patch(facecolor="#ff0000", label="Crisis"),
+        ]
+        ax.legend(handles=legend_elements, loc="lower right", fontsize=9, framealpha=0.7)
+
+        plt.tight_layout()
+
+        # Return as BytesIO (not discord.File, since cog will wrap it)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+        buf.seek(0)
+        plt.close(fig)
+        return buf
+
+    except Exception as exc:
+        logger.error("Failed to create regime timeline chart: %s", exc, exc_info=True)
         plt.close("all")
         return None
