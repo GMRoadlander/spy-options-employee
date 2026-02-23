@@ -1,19 +1,25 @@
-"""Tests for PolygonClient -- all HTTP calls are mocked.
+"""Tests for PolygonClient and PolygonOptionsStream -- all calls are mocked.
 
-Covers: authentication, rate limiting, options chain fetching, trade fetching,
+Covers: REST authentication, rate limiting, options chain fetching, trade fetching,
 news fetching, error handling, graceful degradation without API key,
-and session management.
+session management, WebSocket connect/listen/disconnect, trade classification
+(sweep/block/standard), and flow aggregation.
 """
 
 import asyncio
+import json
 import time
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
+
 from src.data.polygon_client import (
     PolygonAuthError,
     PolygonClient,
+    PolygonFlowAggregator,
+    PolygonOptionsStream,
     PolygonRateLimitError,
 )
 
@@ -534,3 +540,548 @@ class TestSessionManagement:
             mock_cls.return_value = mock_instance
             session = await client._get_session()
             assert session is mock_instance
+
+
+# ===========================================================================
+# WebSocket Tests: PolygonOptionsStream
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Helpers: WebSocket mocking
+# ---------------------------------------------------------------------------
+
+
+def _make_ws_trade_event(
+    ticker: str = "O:SPY251219C00600000",
+    price: float = 8.75,
+    size: int = 10,
+    exchange: int = 316,
+    conditions: list | None = None,
+    timestamp: int = 1700000000000,
+) -> dict:
+    """Build a mock Polygon WebSocket trade event."""
+    return {
+        "ev": "T",
+        "sym": ticker,
+        "p": price,
+        "s": size,
+        "x": exchange,
+        "c": conditions or [209],
+        "t": timestamp,
+    }
+
+
+def _make_ws_quote_event(
+    ticker: str = "O:SPY251219C00600000",
+    bid: float = 8.50,
+    ask: float = 9.00,
+    bid_size: int = 10,
+    ask_size: int = 15,
+    timestamp: int = 1700000000000,
+) -> dict:
+    """Build a mock Polygon WebSocket quote event."""
+    return {
+        "ev": "Q",
+        "sym": ticker,
+        "bp": bid,
+        "ap": ask,
+        "bs": bid_size,
+        "as": ask_size,
+        "t": timestamp,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tests: PolygonOptionsStream connect
+# ---------------------------------------------------------------------------
+
+
+class TestPolygonOptionsStreamConnect:
+    """Tests for WebSocket connection and authentication."""
+
+    @pytest.mark.asyncio
+    async def test_connect_authenticates(self):
+        """connect() sends auth message with API key."""
+        stream = PolygonOptionsStream(api_key="test_key", tickers=["SPY"])
+
+        # Mock WebSocket
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+
+        # Connection message, then auth response
+        mock_ws.receive_json = AsyncMock(
+            side_effect=[
+                [{"status": "connected", "message": "Connected Successfully"}],
+                [{"status": "auth_success", "message": "authenticated"}],
+            ]
+        )
+        mock_ws.send_json = AsyncMock()
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        stream._session = mock_session
+
+        await stream.connect()
+
+        assert stream._connected is True
+        # Verify auth message was sent
+        auth_call = mock_ws.send_json.call_args_list[0]
+        assert auth_call[0][0] == {"action": "auth", "params": "test_key"}
+
+        # Verify subscribe message was sent
+        subscribe_call = mock_ws.send_json.call_args_list[1]
+        subscribe_params = subscribe_call[0][0]["params"]
+        assert "T.SPY" in subscribe_params
+        assert "Q.SPY" in subscribe_params
+
+    @pytest.mark.asyncio
+    async def test_connect_auth_failure_raises(self):
+        """connect() raises PolygonAuthError on auth failure."""
+        stream = PolygonOptionsStream(api_key="bad_key", tickers=["SPY"])
+
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        mock_ws.receive_json = AsyncMock(
+            side_effect=[
+                [{"status": "connected", "message": "Connected"}],
+                [{"status": "auth_failed", "message": "invalid API key"}],
+            ]
+        )
+        mock_ws.send_json = AsyncMock()
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        mock_session.ws_connect = AsyncMock(return_value=mock_ws)
+
+        stream._session = mock_session
+
+        with pytest.raises(PolygonAuthError, match="auth failed"):
+            await stream.connect()
+
+    @pytest.mark.asyncio
+    async def test_connect_no_api_key(self):
+        """connect() returns without connecting when API key is empty."""
+        stream = PolygonOptionsStream(api_key="", tickers=["SPY"])
+        await stream.connect()
+        assert stream._connected is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: PolygonOptionsStream message parsing
+# ---------------------------------------------------------------------------
+
+
+class TestPolygonOptionsStreamParsing:
+    """Tests for WebSocket message parsing."""
+
+    def test_parse_trade_event(self):
+        """Trade event is parsed into normalized dict."""
+        stream = PolygonOptionsStream(api_key="test_key")
+        event = _make_ws_trade_event(
+            ticker="O:SPY251219C00600000",
+            price=8.75,
+            size=10,
+            exchange=316,
+        )
+
+        result = stream._parse_event(event)
+
+        assert result is not None
+        assert result["type"] == "trade"
+        assert result["ticker"] == "O:SPY251219C00600000"
+        assert result["price"] == 8.75
+        assert result["size"] == 10
+        assert result["exchange"] == 316
+
+    def test_parse_quote_event(self):
+        """Quote event is parsed into normalized dict."""
+        stream = PolygonOptionsStream(api_key="test_key")
+        event = _make_ws_quote_event(
+            ticker="O:SPY251219C00600000",
+            bid=8.50,
+            ask=9.00,
+            bid_size=10,
+            ask_size=15,
+        )
+
+        result = stream._parse_event(event)
+
+        assert result is not None
+        assert result["type"] == "quote"
+        assert result["ticker"] == "O:SPY251219C00600000"
+        assert result["bid"] == 8.50
+        assert result["ask"] == 9.00
+        assert result["bid_size"] == 10
+        assert result["ask_size"] == 15
+
+    def test_parse_unknown_event_returns_none(self):
+        """Unknown event type returns None."""
+        stream = PolygonOptionsStream(api_key="test_key")
+        event = {"ev": "status", "status": "connected"}
+
+        result = stream._parse_event(event)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: PolygonOptionsStream trade classification
+# ---------------------------------------------------------------------------
+
+
+class TestTradeClassification:
+    """Tests for _classify_trade method."""
+
+    def test_block_detection(self):
+        """Trades larger than block_threshold are classified as block."""
+        stream = PolygonOptionsStream(
+            api_key="test_key", block_threshold=100
+        )
+        trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 8.75,
+            "size": 150,  # > 100 threshold
+            "exchange": 316,
+            "timestamp": 1700000000000,
+        }
+
+        result = stream._classify_trade(trade)
+        assert result == "block"
+
+    def test_block_at_threshold_is_standard(self):
+        """Trades exactly at block_threshold are standard (not block)."""
+        stream = PolygonOptionsStream(
+            api_key="test_key", block_threshold=100
+        )
+        trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 8.75,
+            "size": 100,  # exactly at threshold, not above
+            "exchange": 316,
+            "timestamp": 1700000000000,
+        }
+
+        result = stream._classify_trade(trade)
+        assert result == "standard"
+
+    def test_sweep_detection_multiple_exchanges(self):
+        """Trades on multiple exchanges within window are classified as sweep."""
+        stream = PolygonOptionsStream(
+            api_key="test_key",
+            block_threshold=100,
+            sweep_window_seconds=2.0,
+        )
+
+        ticker = "O:SPY251219C00600000"
+
+        # First trade on exchange 316
+        trade1 = {
+            "type": "trade",
+            "ticker": ticker,
+            "price": 8.75,
+            "size": 10,
+            "exchange": 316,
+            "timestamp": 1700000000000,
+        }
+        result1 = stream._classify_trade(trade1)
+        assert result1 == "standard"  # Only one exchange so far
+
+        # Second trade on different exchange 317 (same ticker, within window)
+        trade2 = {
+            "type": "trade",
+            "ticker": ticker,
+            "price": 8.80,
+            "size": 15,
+            "exchange": 317,
+            "timestamp": 1700000000001,
+        }
+        result2 = stream._classify_trade(trade2)
+        assert result2 == "sweep"  # Multiple exchanges within window
+
+    def test_standard_trade(self):
+        """Normal small trade on single exchange is classified as standard."""
+        stream = PolygonOptionsStream(
+            api_key="test_key", block_threshold=100
+        )
+        trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 8.75,
+            "size": 5,
+            "exchange": 316,
+            "timestamp": 1700000000000,
+        }
+
+        result = stream._classify_trade(trade)
+        assert result == "standard"
+
+
+# ---------------------------------------------------------------------------
+# Tests: PolygonOptionsStream listen
+# ---------------------------------------------------------------------------
+
+
+class TestPolygonOptionsStreamListen:
+    """Tests for WebSocket listen loop."""
+
+    @pytest.mark.asyncio
+    async def test_listen_dispatches_trade(self):
+        """listen() calls callback with parsed trade events."""
+        stream = PolygonOptionsStream(api_key="test_key")
+
+        trade_event = _make_ws_trade_event()
+        received = []
+
+        async def mock_callback(data):
+            received.append(data)
+
+        # Create mock message
+        mock_msg = MagicMock()
+        mock_msg.type = aiohttp.WSMsgType.TEXT
+        mock_msg.data = json.dumps([trade_event])
+
+        # Create a mock WS that yields one message then closes
+        mock_close_msg = MagicMock()
+        mock_close_msg.type = aiohttp.WSMsgType.CLOSED
+
+        # Build an async iterator for the WebSocket
+        async def _ws_aiter():
+            yield mock_msg
+            yield mock_close_msg
+
+        mock_ws = AsyncMock()
+        mock_ws.__aiter__ = lambda self: _ws_aiter()
+
+        stream._ws = mock_ws
+        stream._connected = True
+
+        # Patch asyncio.sleep to avoid delay in reconnection
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await stream.listen(mock_callback)
+
+        assert len(received) == 1
+        assert received[0]["type"] == "trade"
+        assert received[0]["ticker"] == "O:SPY251219C00600000"
+        assert "classification" in received[0]
+
+    @pytest.mark.asyncio
+    async def test_listen_not_connected(self):
+        """listen() returns immediately when not connected."""
+        stream = PolygonOptionsStream(api_key="test_key")
+        stream._connected = False
+
+        callback = AsyncMock()
+        await stream.listen(callback)
+
+        callback.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: PolygonOptionsStream disconnect
+# ---------------------------------------------------------------------------
+
+
+class TestPolygonOptionsStreamDisconnect:
+    """Tests for WebSocket disconnect."""
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_ws_and_session(self):
+        """disconnect() closes WebSocket and session."""
+        stream = PolygonOptionsStream(api_key="test_key")
+
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        stream._ws = mock_ws
+
+        mock_session = AsyncMock()
+        mock_session.closed = False
+        stream._session = mock_session
+        stream._connected = True
+
+        await stream.disconnect()
+
+        assert stream._connected is False
+        mock_ws.close.assert_called_once()
+        mock_session.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_noop_when_not_connected(self):
+        """disconnect() is safe when not connected."""
+        stream = PolygonOptionsStream(api_key="test_key")
+        await stream.disconnect()  # Should not raise
+
+
+# ===========================================================================
+# Flow Aggregator Tests: PolygonFlowAggregator
+# ===========================================================================
+
+
+class TestPolygonFlowAggregator:
+    """Tests for PolygonFlowAggregator."""
+
+    def test_process_trade_accumulates(self):
+        """process_trade accumulates volume and premium."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 8.75,
+            "size": 10,
+            "classification": "standard",
+        }
+        agg.process_trade(trade)
+
+        summary = agg.get_flow_summary()
+        assert summary["total_volume"] == 10
+        # Premium = price * size * 100 = 8.75 * 10 * 100 = 8750
+        assert summary["total_premium"] == pytest.approx(8750.0)
+        assert summary["call_volume"] == 10  # C in ticker
+        assert summary["put_volume"] == 0
+
+    def test_process_put_trade(self):
+        """Put trades accumulate in put_volume."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219P00550000",
+            "price": 5.50,
+            "size": 20,
+            "classification": "standard",
+        }
+        agg.process_trade(trade)
+
+        summary = agg.get_flow_summary()
+        assert summary["put_volume"] == 20
+        assert summary["call_volume"] == 0
+
+    def test_sweep_and_block_counts(self):
+        """Sweep and block classifications are counted."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        sweep_trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 8.75,
+            "size": 10,
+            "classification": "sweep",
+        }
+        block_trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 9.00,
+            "size": 200,
+            "classification": "block",
+        }
+
+        agg.process_trade(sweep_trade)
+        agg.process_trade(sweep_trade)
+        agg.process_trade(block_trade)
+
+        summary = agg.get_flow_summary()
+        assert summary["sweep_count"] == 2
+        assert summary["block_count"] == 1
+
+    def test_largest_trade_tracked(self):
+        """Largest trade by premium is tracked."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        small_trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 2.00,
+            "size": 5,
+            "classification": "standard",
+        }
+        large_trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 10.00,
+            "size": 100,
+            "classification": "block",
+        }
+
+        agg.process_trade(small_trade)
+        agg.process_trade(large_trade)
+
+        summary = agg.get_flow_summary()
+        assert summary["largest_trade"]["price"] == 10.00
+        assert summary["largest_trade"]["size"] == 100
+
+    def test_net_premium(self):
+        """Net premium = call premium - put premium."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        call_trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 10.00,
+            "size": 10,
+            "classification": "standard",
+        }
+        put_trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219P00550000",
+            "price": 5.00,
+            "size": 10,
+            "classification": "standard",
+        }
+
+        agg.process_trade(call_trade)
+        agg.process_trade(put_trade)
+
+        summary = agg.get_flow_summary()
+        # Call premium = 10 * 10 * 100 = 10000
+        # Put premium = 5 * 10 * 100 = 5000
+        # Net = 10000 - 5000 = 5000
+        assert summary["net_premium"] == pytest.approx(5000.0)
+
+    def test_reset_clears_window(self):
+        """reset() clears all accumulated data."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        trade = {
+            "type": "trade",
+            "ticker": "O:SPY251219C00600000",
+            "price": 8.75,
+            "size": 10,
+            "classification": "standard",
+        }
+        agg.process_trade(trade)
+        agg.reset()
+
+        summary = agg.get_flow_summary()
+        assert summary["total_volume"] == 0
+        assert summary["total_premium"] == 0.0
+        assert summary["call_volume"] == 0
+        assert summary["put_volume"] == 0
+        assert summary["sweep_count"] == 0
+        assert summary["block_count"] == 0
+        assert summary["largest_trade"] == {}
+
+    def test_ignores_non_trade_events(self):
+        """process_trade ignores events that are not trades."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+
+        quote = {
+            "type": "quote",
+            "ticker": "O:SPY251219C00600000",
+            "bid": 8.50,
+            "ask": 9.00,
+        }
+        agg.process_trade(quote)
+
+        summary = agg.get_flow_summary()
+        assert summary["total_volume"] == 0
+
+    def test_window_start_set(self):
+        """window_start is set to current time on init and reset."""
+        agg = PolygonFlowAggregator(window_seconds=60)
+        summary = agg.get_flow_summary()
+        assert summary["window_start"] is not None
+        assert len(summary["window_start"]) > 0

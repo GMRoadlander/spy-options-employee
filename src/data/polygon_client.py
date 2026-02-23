@@ -1,14 +1,18 @@
 """Polygon.io API client for options data.
 
 Provides REST endpoints for options chain snapshots, individual trades,
-OHLCV aggregates, and news articles. Follows the same async aiohttp
-pattern established by ORATSClient.
+OHLCV aggregates, and news articles, plus WebSocket streaming for
+real-time OPRA options data. Follows the same async aiohttp pattern
+established by ORATSClient.
 
 REST endpoints:
   - /v3/snapshot/options/{underlying} — options chain snapshots
   - /v3/trades/{options_ticker} — individual option trades
   - /v2/aggs/ticker/{ticker}/range/... — OHLCV bars
   - /v2/reference/news — news articles
+
+WebSocket:
+  - wss://socket.polygon.io/options — real-time OPRA feed (trades + quotes)
 
 Rate limits (free tier):
   - 5 requests per minute (configurable via POLYGON_RATE_LIMIT)
@@ -22,13 +26,36 @@ Environment:
 """
 
 import asyncio
+import json
 import logging
+import re
 import time
-from typing import Any
+from collections import deque
+from datetime import datetime, timezone
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+# Regex to extract call/put from OCC-style option ticker
+# Format: O:SPY251219C00600000 — the C or P after 6 date digits
+_OCC_TYPE_RE = re.compile(r"\d{6}([CP])")
+
+
+def _option_type_from_ticker(ticker: str) -> str | None:
+    """Extract option type ('C' or 'P') from an OCC-style option ticker.
+
+    Examples:
+        O:SPY251219C00600000 -> 'C'
+        O:SPY251219P00550000 -> 'P'
+        SPY -> None
+
+    Returns:
+        'C' for call, 'P' for put, or None if not a recognized option ticker.
+    """
+    m = _OCC_TYPE_RE.search(ticker)
+    return m.group(1) if m else None
 
 
 class PolygonRateLimitError(Exception):
@@ -396,3 +423,388 @@ class PolygonClient:
             await self._session.close()
             self._session = None
             logger.debug("Polygon client session closed")
+
+
+# ---------------------------------------------------------------------------
+# WebSocket streaming for real-time OPRA data
+# ---------------------------------------------------------------------------
+
+
+class PolygonOptionsStream:
+    """WebSocket client for real-time options data via Polygon.io OPRA feed.
+
+    Connects to wss://socket.polygon.io/options for trade and quote events.
+    Designed for the $199/mo Options plan (real-time). On the Starter plan
+    ($29/mo), the stream still works but delivers 15-minute delayed data.
+
+    Usage:
+        stream = PolygonOptionsStream(api_key="...", tickers=["SPY", "SPX"])
+        await stream.connect()
+        await stream.listen(my_callback)
+        await stream.disconnect()
+    """
+
+    WS_URL = "wss://socket.polygon.io/options"
+
+    # Backoff settings for reconnection
+    _INITIAL_BACKOFF = 1.0
+    _MAX_BACKOFF = 30.0
+    _BACKOFF_MULTIPLIER = 2.0
+
+    def __init__(
+        self,
+        api_key: str,
+        tickers: list[str] | None = None,
+        block_threshold: int = 100,
+        sweep_window_seconds: float = 2.0,
+    ) -> None:
+        self._api_key = api_key
+        self._tickers = tickers or ["SPX", "SPY"]
+        self._block_threshold = block_threshold
+        self._sweep_window_seconds = sweep_window_seconds
+        self._session: aiohttp.ClientSession | None = None
+        self._ws: aiohttp.ClientWebSocketResponse | None = None
+        self._connected = False
+        self._backoff = self._INITIAL_BACKOFF
+
+        # Sliding window for sweep detection: deque of (timestamp, exchange, ticker)
+        self._recent_trades: deque[tuple[float, int, str]] = deque(maxlen=1000)
+
+    async def connect(self) -> None:
+        """Connect to the Polygon.io options WebSocket and authenticate.
+
+        Handles connection errors with exponential backoff (1s, 2s, 4s, max 30s).
+
+        Raises:
+            PolygonAuthError: If authentication fails.
+        """
+        if not self._api_key:
+            logger.warning(
+                "Polygon API key not configured — WebSocket will not connect"
+            )
+            return
+
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+
+        try:
+            self._ws = await self._session.ws_connect(self.WS_URL)
+            self._connected = True
+            self._backoff = self._INITIAL_BACKOFF
+
+            # Read the connection status message
+            connect_msg = await self._ws.receive_json()
+            if isinstance(connect_msg, list) and connect_msg:
+                status = connect_msg[0].get("status", "")
+                message = connect_msg[0].get("message", "")
+                logger.info(
+                    "Polygon WebSocket connected: status=%s message=%s",
+                    status,
+                    message,
+                )
+
+            # Authenticate
+            auth_msg = {"action": "auth", "params": self._api_key}
+            await self._ws.send_json(auth_msg)
+
+            auth_resp = await self._ws.receive_json()
+            if isinstance(auth_resp, list) and auth_resp:
+                auth_status = auth_resp[0].get("status", "")
+                if auth_status == "auth_success":
+                    logger.info("Polygon WebSocket authenticated successfully")
+                    # Log plan level if available
+                    plan_msg = auth_resp[0].get("message", "")
+                    if plan_msg:
+                        logger.info("Polygon plan: %s", plan_msg)
+                else:
+                    raise PolygonAuthError(
+                        f"Polygon WebSocket auth failed: {auth_resp}"
+                    )
+
+            # Subscribe to trade and quote channels
+            subscribe_params = ",".join(
+                [f"T.{t}" for t in self._tickers]
+                + [f"Q.{t}" for t in self._tickers]
+            )
+            subscribe_msg = {"action": "subscribe", "params": subscribe_params}
+            await self._ws.send_json(subscribe_msg)
+
+            logger.info(
+                "Polygon WebSocket subscribed to: %s", subscribe_params
+            )
+
+        except PolygonAuthError:
+            raise
+        except Exception as exc:
+            self._connected = False
+            logger.error("Polygon WebSocket connect failed: %s", exc)
+            raise
+
+    async def listen(
+        self,
+        callback: Callable[[dict], Awaitable[None]],
+    ) -> None:
+        """Listen for incoming messages and dispatch to callback.
+
+        Parses trade (T) and quote (Q) messages into normalized dicts
+        and calls the callback for each. Reconnects with exponential
+        backoff on disconnection.
+
+        Args:
+            callback: Async function called with each parsed message dict.
+        """
+        if not self._connected or self._ws is None:
+            logger.warning("Polygon WebSocket not connected — cannot listen")
+            return
+
+        try:
+            async for msg in self._ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        logger.warning("Polygon WS: invalid JSON: %s", msg.data[:100])
+                        continue
+
+                    if not isinstance(data, list):
+                        data = [data]
+
+                    for event in data:
+                        parsed = self._parse_event(event)
+                        if parsed is not None:
+                            # Classify trades
+                            if parsed["type"] == "trade":
+                                parsed["classification"] = self._classify_trade(parsed)
+                            await callback(parsed)
+
+                elif msg.type in (
+                    aiohttp.WSMsgType.CLOSED,
+                    aiohttp.WSMsgType.ERROR,
+                ):
+                    logger.warning(
+                        "Polygon WebSocket disconnected: %s", msg.type
+                    )
+                    break
+
+        except Exception as exc:
+            logger.error("Polygon WebSocket listen error: %s", exc)
+
+        self._connected = False
+
+        # Attempt reconnection with exponential backoff
+        logger.info(
+            "Polygon WebSocket reconnecting in %.1fs...", self._backoff
+        )
+        await asyncio.sleep(self._backoff)
+        self._backoff = min(
+            self._backoff * self._BACKOFF_MULTIPLIER, self._MAX_BACKOFF
+        )
+
+    def _parse_event(self, event: dict) -> dict | None:
+        """Parse a raw WebSocket event into a normalized dict.
+
+        Args:
+            event: Raw event from Polygon WebSocket.
+
+        Returns:
+            Normalized dict with type, ticker, and relevant fields,
+            or None if the event type is not recognized.
+        """
+        ev_type = event.get("ev", "")
+
+        if ev_type == "T":
+            # Trade event
+            return {
+                "type": "trade",
+                "ticker": event.get("sym", ""),
+                "price": float(event.get("p", 0.0)),
+                "size": int(event.get("s", 0)),
+                "exchange": int(event.get("x", 0)),
+                "conditions": event.get("c", []),
+                "timestamp": int(event.get("t", 0)),
+            }
+        elif ev_type == "Q":
+            # Quote event
+            return {
+                "type": "quote",
+                "ticker": event.get("sym", ""),
+                "bid": float(event.get("bp", 0.0)),
+                "ask": float(event.get("ap", 0.0)),
+                "bid_size": int(event.get("bs", 0)),
+                "ask_size": int(event.get("as", 0)),
+                "timestamp": int(event.get("t", 0)),
+            }
+        else:
+            # Status or other event types — skip silently
+            return None
+
+    def _classify_trade(self, trade: dict) -> str:
+        """Classify a trade as sweep, block, or standard.
+
+        Classification rules:
+          - "block": Single trade with size > block_threshold (default 100 contracts).
+          - "sweep": Same ticker traded on multiple exchanges within the sweep
+            window (default 2 seconds). Tracked via a sliding window of recent trades.
+          - "standard": Everything else.
+
+        Args:
+            trade: Normalized trade dict from _parse_event.
+
+        Returns:
+            One of "sweep", "block", or "standard".
+        """
+        size = trade.get("size", 0)
+        exchange = trade.get("exchange", 0)
+        ticker = trade.get("ticker", "")
+        timestamp = trade.get("timestamp", 0)
+
+        # Block detection: large single trade
+        if size > self._block_threshold:
+            return "block"
+
+        # Record this trade for sweep detection
+        now = time.time()
+        self._recent_trades.append((now, exchange, ticker))
+
+        # Sweep detection: same ticker, multiple exchanges within window
+        cutoff = now - self._sweep_window_seconds
+        recent_for_ticker = [
+            (t, ex, tk)
+            for t, ex, tk in self._recent_trades
+            if t > cutoff and tk == ticker
+        ]
+
+        exchanges_seen = set(ex for _, ex, _ in recent_for_ticker)
+        if len(exchanges_seen) >= 2:
+            return "sweep"
+
+        return "standard"
+
+    async def disconnect(self) -> None:
+        """Cleanly disconnect the WebSocket."""
+        self._connected = False
+
+        if self._ws is not None and not self._ws.closed:
+            await self._ws.close()
+            self._ws = None
+            logger.debug("Polygon WebSocket disconnected")
+
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
+
+# ---------------------------------------------------------------------------
+# Flow aggregation for windowed summaries
+# ---------------------------------------------------------------------------
+
+
+class PolygonFlowAggregator:
+    """Aggregates streaming option trades into windowed flow summaries.
+
+    Accumulates trades within a configurable time window and produces
+    summary statistics useful for flow analysis dashboards and alerts.
+
+    Usage:
+        aggregator = PolygonFlowAggregator(window_seconds=60)
+        aggregator.process_trade(trade_dict)
+        summary = aggregator.get_flow_summary()
+    """
+
+    def __init__(self, window_seconds: int = 60) -> None:
+        self._window_seconds = window_seconds
+        self._window_start: str = datetime.now(timezone.utc).isoformat()
+        self._trades: list[dict] = []
+        self._total_volume: int = 0
+        self._total_premium: float = 0.0
+        self._call_volume: int = 0
+        self._put_volume: int = 0
+        self._sweep_count: int = 0
+        self._block_count: int = 0
+        self._largest_trade: dict = {}
+
+    def process_trade(self, trade: dict) -> None:
+        """Accumulate a trade in the current window.
+
+        Args:
+            trade: Normalized trade dict with type, ticker, price, size,
+                   and optionally classification.
+        """
+        if trade.get("type") != "trade":
+            return
+
+        size = trade.get("size", 0)
+        price = trade.get("price", 0.0)
+        premium = price * size * 100  # Options are 100 shares per contract
+
+        self._trades.append(trade)
+        self._total_volume += size
+        self._total_premium += premium
+
+        # Determine call vs put from ticker convention
+        # OCC format: O:SPY251219C00600000 (C=call, P=put)
+        ticker = trade.get("ticker", "")
+        opt_type = _option_type_from_ticker(ticker)
+        if opt_type == "C":
+            self._call_volume += size
+        elif opt_type == "P":
+            self._put_volume += size
+
+        # Count classification types
+        classification = trade.get("classification", "standard")
+        if classification == "sweep":
+            self._sweep_count += 1
+        elif classification == "block":
+            self._block_count += 1
+
+        # Track largest trade
+        if not self._largest_trade or premium > (
+            self._largest_trade.get("price", 0.0)
+            * self._largest_trade.get("size", 0)
+            * 100
+        ):
+            self._largest_trade = trade
+
+    def get_flow_summary(self) -> dict:
+        """Return a summary of the current aggregation window.
+
+        Returns:
+            Dict with total_volume, total_premium, call_volume, put_volume,
+            sweep_count, block_count, net_premium, largest_trade, window_start.
+        """
+        # Net premium: calls positive, puts negative
+        call_premium = sum(
+            t.get("price", 0.0) * t.get("size", 0) * 100
+            for t in self._trades
+            if _option_type_from_ticker(t.get("ticker", "")) == "C"
+        )
+        put_premium = sum(
+            t.get("price", 0.0) * t.get("size", 0) * 100
+            for t in self._trades
+            if _option_type_from_ticker(t.get("ticker", "")) == "P"
+        )
+        net_premium = call_premium - put_premium
+
+        return {
+            "total_volume": self._total_volume,
+            "total_premium": self._total_premium,
+            "call_volume": self._call_volume,
+            "put_volume": self._put_volume,
+            "sweep_count": self._sweep_count,
+            "block_count": self._block_count,
+            "net_premium": net_premium,
+            "largest_trade": self._largest_trade,
+            "window_start": self._window_start,
+        }
+
+    def reset(self) -> None:
+        """Clear the current aggregation window and start a new one."""
+        self._window_start = datetime.now(timezone.utc).isoformat()
+        self._trades = []
+        self._total_volume = 0
+        self._total_premium = 0.0
+        self._call_volume = 0
+        self._put_volume = 0
+        self._sweep_count = 0
+        self._block_count = 0
+        self._largest_trade = {}
