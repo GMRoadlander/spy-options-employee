@@ -214,6 +214,9 @@ class SentimentManager:
         self._news_client = news_client
         self._feature_store = feature_store
 
+        # Cached latest aggregate (includes velocity, positive/negative/neutral_pct).
+        self._latest_aggregate: dict | None = None
+
     async def update(self, ticker: str = "SPX") -> dict | None:
         """Fetch headlines, score, aggregate, compute velocity, and persist.
 
@@ -253,6 +256,9 @@ class SentimentManager:
 
         aggregate["sentiment_velocity"] = velocity
 
+        # Cache the full aggregate for get_current_sentiment() enrichment.
+        self._latest_aggregate = aggregate
+
         # Persist to feature store.
         today = date.today().isoformat()
         await self._feature_store.save_features(
@@ -287,10 +293,19 @@ class SentimentManager:
         if sentiment_score is None:
             return None
 
-        return {
+        result = {
             "sentiment_score": float(sentiment_score),
             "date": latest.get("date"),
         }
+
+        # Merge cached aggregate fields (velocity, pct breakdowns)
+        # if available from the most recent update() call.
+        if self._latest_aggregate is not None:
+            for key in ("sentiment_velocity", "positive_pct", "negative_pct", "neutral_pct"):
+                if key in self._latest_aggregate:
+                    result[key] = self._latest_aggregate[key]
+
+        return result
 
     async def get_sentiment_history(
         self,

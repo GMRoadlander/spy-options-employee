@@ -437,6 +437,58 @@ class TestSentimentManagerGetCurrent:
         result = await mgr.get_current_sentiment("SPX")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_get_current_sentiment_includes_aggregate_after_update(self) -> None:
+        """After update(), get_current_sentiment includes velocity and pct breakdowns."""
+        scorer = _make_scorer_with_mock([
+            {"label": "positive", "score": 0.9},
+            {"label": "negative", "score": 0.7},
+            {"label": "neutral", "score": 0.6},
+        ])
+        news = _make_mock_news_client([
+            {"title": "Good news", "published": "2026-02-23T10:00:00Z", "source": "Reuters", "url": "https://example.com/1"},
+            {"title": "Bad news", "published": "2026-02-23T09:00:00Z", "source": "Bloomberg", "url": "https://example.com/2"},
+            {"title": "Meh news", "published": "2026-02-23T08:00:00Z", "source": "AP", "url": "https://example.com/3"},
+        ])
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "sentiment_score": 0.05,
+            "date": "2026-02-23",
+        }
+
+        mgr = SentimentManager(scorer, news, store)
+        await mgr.update("SPX")
+
+        result = await mgr.get_current_sentiment("SPX")
+        assert result is not None
+        assert "sentiment_velocity" in result
+        assert "positive_pct" in result
+        assert "negative_pct" in result
+        assert "neutral_pct" in result
+        # Verify types
+        assert isinstance(result["positive_pct"], float)
+        assert isinstance(result["negative_pct"], float)
+        assert isinstance(result["neutral_pct"], float)
+
+    @pytest.mark.asyncio
+    async def test_get_current_sentiment_no_cached_aggregate(self) -> None:
+        """Without a prior update(), result has no velocity or pct fields."""
+        scorer = _make_scorer_with_mock()
+        news = _make_mock_news_client()
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "sentiment_score": 0.30,
+            "date": "2026-02-22",
+        }
+
+        mgr = SentimentManager(scorer, news, store)
+        result = await mgr.get_current_sentiment("SPX")
+        assert result is not None
+        assert "sentiment_velocity" not in result
+        assert "positive_pct" not in result
+        assert "negative_pct" not in result
+        assert "neutral_pct" not in result
+
 
 class TestSentimentManagerGetHistory:
     """SentimentManager.get_sentiment_history() reads time series."""
