@@ -464,6 +464,7 @@ class VolForecaster:
         patience: int = 10,
         val_split: float = 0.2,
         batch_size: int = 32,
+        stats: dict[str, Any] | None = None,
     ) -> dict[str, float | int]:
         """Train the LSTM on a :class:`VolDataset`.
 
@@ -478,11 +479,17 @@ class VolForecaster:
             patience: Early stopping patience (epochs without improvement).
             val_split: Fraction of data for validation (temporal split).
             batch_size: Mini-batch size.
+            stats: Normalisation stats dict (``feature_mean``,
+                ``feature_std``, ``target_mean``, ``target_std``).
+                If provided, sets ``_stats`` so the model is usable
+                for prediction after training.
 
         Returns:
             Dict with ``train_loss``, ``val_loss``, ``epochs_trained``,
             ``best_epoch``.
         """
+        if stats is not None:
+            self._stats = stats
         n = len(dataset)
         val_size = max(1, int(n * val_split))
         train_size = n - val_size
@@ -700,10 +707,9 @@ class VolManager:
             lookback=self._lookback,
             n_features=stats["n_features"],
         )
-        forecaster._stats = stats
 
         training_result = forecaster.train(
-            dataset, epochs=epochs, lr=lr, patience=patience
+            dataset, epochs=epochs, lr=lr, patience=patience, stats=stats
         )
 
         # Save checkpoint.

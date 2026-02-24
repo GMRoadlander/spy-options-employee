@@ -808,3 +808,43 @@ class TestVolManagerEndToEnd:
 
             assert abs(pred1["vol_1d"] - pred2["vol_1d"]) < 1e-5
             assert abs(pred1["vol_5d"] - pred2["vol_5d"]) < 1e-5
+
+
+# ---------------------------------------------------------------------------
+# Step 7: VolForecaster.train() stats parameter tests
+# ---------------------------------------------------------------------------
+
+
+class TestVolForecasterTrainStats:
+    """Tests for passing stats through train() instead of setting _stats directly."""
+
+    def test_forecaster_train_with_stats_enables_predict(self) -> None:
+        """Passing stats to train() makes the model usable for prediction."""
+        ds, stats = _make_vol_dataset(n=200, lookback=20)
+        f = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+
+        # Do NOT set _stats directly; pass through train().
+        assert f._stats is None
+        f.train(ds, epochs=3, patience=2, stats=stats)
+
+        # Now _stats should be set and predict should work.
+        assert f._stats is not None
+        assert f.is_trained is True
+        data = np.random.randn(20, 5).astype(np.float32)
+        result = f.predict(data)
+        assert "vol_1d" in result
+        assert "vol_5d" in result
+
+    def test_forecaster_train_without_stats_predict_raises(self) -> None:
+        """Training without stats leaves _stats as None; predict raises."""
+        ds, stats = _make_vol_dataset(n=200, lookback=20)
+        f = VolForecaster(lookback=20, hidden_size=16, n_features=5)
+
+        # Train without passing stats.
+        f.train(ds, epochs=3, patience=2)
+
+        # _stats was never set, so predict should raise.
+        assert f._stats is None
+        data = np.random.randn(20, 5).astype(np.float32)
+        with pytest.raises(RuntimeError, match="no normalisation stats"):
+            f.predict(data)
