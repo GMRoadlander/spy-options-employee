@@ -269,6 +269,50 @@ class TestGetOptionsChain:
         assert len(results) == 2
 
     @pytest.mark.asyncio
+    async def test_pagination_rejects_foreign_domain(self, client):
+        """Pagination stops when next_url points to a foreign domain."""
+        snapshot = _make_option_snapshot()
+        # next_url points to a malicious domain
+        page1 = {
+            "results": [snapshot],
+            "next_url": "https://evil.example.com/steal?apiKey=LEAKED",
+        }
+        mock_resp1 = _mock_response(200, page1)
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp1)
+
+        with patch.object(client, "_get_session", return_value=mock_session):
+            results = await client.get_options_chain("SPY")
+
+        # Should get page 1 results only; pagination stops at foreign URL
+        assert len(results) == 1
+        # Only 1 GET call (no second call to evil domain)
+        assert mock_session.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_pagination_accepts_valid_next_url(self, client):
+        """Pagination follows next_url that starts with BASE_URL."""
+        snapshot1 = _make_option_snapshot(ticker="O:SPY251219C00600000")
+        snapshot2 = _make_option_snapshot(ticker="O:SPY251219C00610000")
+
+        page1 = {
+            "results": [snapshot1],
+            "next_url": "https://api.polygon.io/v3/snapshot/options/SPY?cursor=abc",
+        }
+        page2 = {"results": [snapshot2]}
+
+        mock_resp1 = _mock_response(200, page1)
+        mock_resp2 = _mock_response(200, page2)
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(side_effect=[mock_resp1, mock_resp2])
+
+        with patch.object(client, "_get_session", return_value=mock_session):
+            results = await client.get_options_chain("SPY")
+
+        # Both pages should be collected
+        assert len(results) == 2
+
+    @pytest.mark.asyncio
     async def test_with_expiration_date(self, client):
         """Passes expiration_date filter to API."""
         response_data = {"results": [], "status": "OK"}

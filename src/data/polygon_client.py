@@ -235,6 +235,14 @@ class PolygonClient:
             # Handle pagination via next_url
             next_url = data.get("next_url")
             while next_url:
+                # SSRF protection: only follow URLs on our own domain
+                if not next_url.startswith(self.BASE_URL):
+                    logger.warning(
+                        "Polygon pagination next_url rejected (foreign domain): %s",
+                        next_url[:120],
+                    )
+                    break
+
                 # next_url is a full URL; extract endpoint + params
                 # Polygon next_url already includes apiKey, so we request directly
                 self._check_rate_limit()
