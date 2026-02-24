@@ -92,7 +92,7 @@ class TestSaveFeatures:
 
 
 class TestUpsert:
-    """Tests for INSERT OR REPLACE (upsert) behaviour."""
+    """Tests for ON CONFLICT DO UPDATE (upsert) behaviour."""
 
     @pytest.mark.asyncio
     async def test_upsert_overwrites_existing(self, fs):
@@ -254,6 +254,72 @@ class TestGetLatestFeatures:
 # ---------------------------------------------------------------------------
 # Tests: Store not initialised
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Tests: partial upsert (ON CONFLICT preserves other columns)
+# ---------------------------------------------------------------------------
+
+
+class TestPartialUpsert:
+    """Tests for the ON CONFLICT DO UPDATE SET fix that preserves columns
+    written by other ML managers."""
+
+    @pytest.mark.asyncio
+    async def test_save_features_partial_update(self, fs):
+        """Save regime, then vol for same date — regime columns preserved."""
+        await fs.save_features("SPX", "2024-06-15", {
+            "regime_state": 1,
+            "regime_probability": 0.85,
+        })
+        await fs.save_features("SPX", "2024-06-15", {
+            "vol_forecast_1d": 0.15,
+            "vol_forecast_5d": 0.18,
+        })
+
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is not None
+        # Regime columns must survive the vol update.
+        assert row["regime_state"] == 1
+        assert row["regime_probability"] == pytest.approx(0.85)
+        # Vol columns must be present.
+        assert row["vol_forecast_1d"] == pytest.approx(0.15)
+        assert row["vol_forecast_5d"] == pytest.approx(0.18)
+
+    @pytest.mark.asyncio
+    async def test_save_features_no_overwrite_existing(self, fs):
+        """Save all features, then partial update — untouched columns remain."""
+        full = {
+            "iv_rank": 72.0,
+            "iv_percentile": 80.0,
+            "skew_25d": 4.2,
+            "regime_state": 0,
+            "regime_probability": 0.95,
+            "vol_forecast_1d": 0.12,
+            "vol_forecast_5d": 0.14,
+            "sentiment_score": 0.30,
+            "anomaly_score": 0.10,
+        }
+        await fs.save_features("SPX", "2024-06-15", full)
+
+        # Partial update: only change anomaly_score.
+        await fs.save_features("SPX", "2024-06-15", {"anomaly_score": 0.55})
+
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is not None
+        assert row["anomaly_score"] == pytest.approx(0.55)
+        # All other columns must be untouched.
+        assert row["iv_rank"] == pytest.approx(72.0)
+        assert row["regime_state"] == 0
+        assert row["vol_forecast_1d"] == pytest.approx(0.12)
+        assert row["sentiment_score"] == pytest.approx(0.30)
+
+    @pytest.mark.asyncio
+    async def test_save_features_empty_dict_noop(self, fs):
+        """Empty features dict does nothing (no row created)."""
+        await fs.save_features("SPX", "2024-06-15", {})
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is None
 
 
 class TestStoreNotInitialised:

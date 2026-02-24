@@ -74,37 +74,51 @@ class FeatureStore:
     ) -> None:
         """Upsert a row of features for a ticker/date combination.
 
-        Uses ``INSERT OR REPLACE`` so that calling this with the same
-        ticker + date will overwrite the previous row.  Only feature
-        columns present in *features* are written; missing columns
-        default to NULL.
+        Uses ``INSERT INTO ... ON CONFLICT(date, ticker) DO UPDATE SET``
+        so that only the explicitly provided (non-None) feature columns
+        are written.  Columns managed by other ML models are left
+        untouched on conflict.
 
         Args:
             ticker: Ticker symbol (e.g. ``"SPX"``).
             date: ISO-format date string (``"YYYY-MM-DD"``).
             features: Mapping of column name to value.  Keys must be
-                valid feature column names.
+                valid feature column names.  Only non-None values are
+                written on conflict.
         """
         db = self._get_db()
 
-        # Build the values dict including metadata columns
-        values: dict[str, object] = {
-            "date": date,
-            "ticker": ticker,
-            "computed_at": datetime.now().isoformat(),
+        # Only include columns explicitly provided with non-None values.
+        provided = {
+            k: v for k, v in features.items()
+            if k in FEATURE_COLUMNS and v is not None
         }
 
-        for col in FEATURE_COLUMNS:
-            values[col] = features.get(col)
+        if not provided:
+            logger.debug("No non-None features provided for %s on %s — skipping", ticker, date)
+            return
 
-        columns = ", ".join(values.keys())
-        placeholders = ", ".join(["?"] * len(values))
+        computed_at = datetime.now().isoformat()
+
+        # Build INSERT columns: metadata + provided features.
+        insert_cols = ["date", "ticker", "computed_at"] + list(provided.keys())
+        insert_vals: list[object] = [date, ticker, computed_at] + list(provided.values())
+        columns_str = ", ".join(insert_cols)
+        placeholders = ", ".join(["?"] * len(insert_vals))
+
+        # ON CONFLICT: only update the provided feature columns + computed_at.
+        update_parts = ["computed_at = excluded.computed_at"]
+        for col in provided:
+            update_parts.append(f"{col} = excluded.{col}")
+        update_clause = ", ".join(update_parts)
+
+        sql = (
+            f"INSERT INTO daily_features ({columns_str}) VALUES ({placeholders}) "
+            f"ON CONFLICT(date, ticker) DO UPDATE SET {update_clause}"
+        )
 
         try:
-            await db.execute(
-                f"INSERT OR REPLACE INTO daily_features ({columns}) VALUES ({placeholders})",
-                tuple(values.values()),
-            )
+            await db.execute(sql, tuple(insert_vals))
             await db.commit()
             logger.debug("Saved features for %s on %s", ticker, date)
         except aiosqlite.Error as exc:
