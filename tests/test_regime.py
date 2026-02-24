@@ -399,6 +399,43 @@ class TestRegimeManagerGetCurrentRegime:
         result = await mgr.get_current_regime("SPX")
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_get_current_regime_includes_duration_after_update(self) -> None:
+        """After update(), get_current_regime includes expected_duration and transition_matrix."""
+        returns, vix = _make_two_regime_data()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = _make_mock_feature_store()
+            # Return regime data from the feature store so get_current_regime
+            # doesn't return None.
+            store.get_latest_features.return_value = {
+                "regime_state": 0,
+                "regime_probability": 0.90,
+            }
+            mgr = RegimeManager(store, tmpdir)
+            await mgr.initialize(returns.tolist(), vix.tolist())
+            await mgr.update(0.001, 15.0, ticker="SPX")
+
+            result = await mgr.get_current_regime("SPX")
+            assert result is not None
+            assert "expected_duration" in result
+            assert "transition_matrix" in result
+            assert isinstance(result["expected_duration"], dict)
+            assert isinstance(result["transition_matrix"], list)
+
+    @pytest.mark.asyncio
+    async def test_get_current_regime_no_cached_prediction(self) -> None:
+        """Without a prior update(), result has no expected_duration or transition_matrix."""
+        store = _make_mock_feature_store()
+        store.get_latest_features.return_value = {
+            "regime_state": 0,
+            "regime_probability": 0.85,
+        }
+        mgr = RegimeManager(store, "/tmp")
+        result = await mgr.get_current_regime("SPX")
+        assert result is not None
+        assert "expected_duration" not in result
+        assert "transition_matrix" not in result
+
 
 class TestRegimeManagerShouldRetrain:
     """Retrain heuristic tests."""

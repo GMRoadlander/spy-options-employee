@@ -408,6 +408,9 @@ class RegimeManager:
         self._trained_at: datetime | None = None
         self._recent_states: list[int] = []  # last N predicted states
 
+        # Cached latest prediction (includes expected_duration, transition_matrix).
+        self._latest_prediction: dict | None = None
+
     @property
     def detector(self) -> RegimeDetector | None:
         """The underlying :class:`RegimeDetector`, or None if uninitialised."""
@@ -498,6 +501,9 @@ class RegimeManager:
         vix_arr = np.asarray(self._vix, dtype=np.float64)
         prediction = self._detector.predict(returns_arr, vix_arr)
 
+        # Cache the full prediction (includes expected_duration, transition_matrix).
+        self._latest_prediction = prediction
+
         # Track state transitions for retrain heuristic.
         self._recent_states.append(prediction["state"])
         if len(self._recent_states) > _RETRAIN_TRANSITION_WINDOW:
@@ -547,11 +553,21 @@ class RegimeManager:
         n_states = self._detector.n_states if self._detector else 2
         state_name = _STATE_NAMES.get((n_states, state_int), f"state-{state_int}")
 
-        return {
+        result = {
             "regime_state": state_int,
             "regime_probability": float(regime_prob) if regime_prob is not None else 0.0,
             "state_name": state_name,
         }
+
+        # Merge cached prediction fields (expected_duration, transition_matrix)
+        # if available from the most recent update() call.
+        if self._latest_prediction is not None:
+            if "expected_duration" in self._latest_prediction:
+                result["expected_duration"] = self._latest_prediction["expected_duration"]
+            if "transition_matrix" in self._latest_prediction:
+                result["transition_matrix"] = self._latest_prediction["transition_matrix"]
+
+        return result
 
     async def should_retrain(self, ticker: str = "SPX") -> bool:
         """Determine whether the model should be retrained.
