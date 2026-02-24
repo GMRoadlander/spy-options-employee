@@ -4,7 +4,7 @@
 
 - **Milestone**: 1.0
 - **Phase**: 4 (Paper Trading & Validation) -- In progress
-- **Status**: 3/10 plans complete. Executing Phase 4.
+- **Status**: 4/10 plans complete. Executing Phase 4.
 - **Last updated**: 2026-02-24
 
 ## Phase Progress
@@ -15,7 +15,7 @@
 | 2 | Strategy Research Engine | complete (3/3 plans) |
 | 2.1 | Code Review Fixes | complete (1/1 plans) |
 | 3 | ML Intelligence Layer | complete (9/9 plans) |
-| 4 | Paper Trading & Validation | in progress (3/10 plans) |
+| 4 | Paper Trading & Validation | in progress (4/10 plans) |
 | 5 | Autonomous Trading | pending |
 
 ## Session Log
@@ -49,3 +49,4 @@
 | 2026-02-24 | plan_04-01_complete | Phase 3 bug fixes: SSRF, info leakage, UPSERT clobber, pickle/torch security, missing ML fields, scheduler collision, dark pool math, Hurst stability, WebSocket reconnect, bot cleanup. 900 tests passing (+13 new). 9 commits. |
 | 2026-02-24 | plan_04-02_complete | Paper trading engine core: 8 dataclasses, 5 DB tables, OrderManager, PositionTracker, PnLCalculator, PaperTradingEngine orchestrator, config values. 1016 tests passing (+116 new). 8 commits. |
 | 2026-02-24 | plan_04-03_complete | Slippage model: DynamicSpreadSlippage (7 factors), FixedSlippage, pluggable FillSimulator, slippage_log table. 1054 tests passing (+38 new). 4 commits. |
+| 2026-02-24 | plan_04-04_complete | Shadow mode + exit monitor: ShadowModeManager (auto paper trade generation), ExitMonitor (5 exit conditions, AM/PM settlement), engine+scheduler wiring. 1110 tests passing (+56 new). 5 commits. |

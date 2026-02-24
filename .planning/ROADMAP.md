@@ -82,7 +82,7 @@
 
 ---
 
-## Phase 4: Paper Trading & Validation (~$450/mo) — IN PROGRESS (3/10 plans)
+## Phase 4: Paper Trading & Validation (~$450/mo) — IN PROGRESS (4/10 plans)
 
 **Goal**: Before live trading, run everything in simulation. Shadow mode generates signals without executing. Paper trading engine simulates realistic fills with slippage. Strategies must prove themselves with real market data before touching real money.
 
