@@ -94,5 +94,15 @@ class Config:
     # Unusual Whales (institutional flow + dark pool — Phase 3)
     unusual_whales_api_key: str = os.getenv("UNUSUAL_WHALES_API_KEY", "")
 
+    # Paper Trading (Phase 4)
+    paper_starting_capital: float = float(os.getenv("PAPER_STARTING_CAPITAL", "100000"))
+    paper_slippage_pct: float = float(os.getenv("PAPER_SLIPPAGE_PCT", "0.10"))
+    paper_fee_per_contract: float = float(os.getenv("PAPER_FEE_PER_CONTRACT", "0.65"))
+    paper_spx_multiplier: float = 100.0
+    paper_min_trades_for_promotion: int = int(os.getenv("PAPER_MIN_TRADES", "30"))
+    paper_min_days_for_promotion: int = int(os.getenv("PAPER_MIN_DAYS", "14"))
+    paper_max_order_age_ticks: int = int(os.getenv("PAPER_MAX_ORDER_AGE", "5"))
+    paper_channel_id: int = int(os.getenv("DISCORD_PAPER_TRADING_CHANNEL_ID", "0"))
+
 
 config = Config()
