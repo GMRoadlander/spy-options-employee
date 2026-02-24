@@ -1,11 +1,12 @@
 """Database schema for the paper trading engine.
 
-Defines 5 tables for paper trading state:
+Defines 6 tables for paper trading state:
 - paper_orders: order lifecycle tracking
 - paper_fills: per-leg fill details with market conditions
 - paper_positions: open positions with mark-to-market
 - paper_trades: completed trade records with final PnL
 - paper_portfolio: daily equity snapshots for performance analysis
+- slippage_log: per-fill slippage analysis for model calibration
 
 All tables use foreign keys referencing the strategies table from
 src/strategy/lifecycle.py. The init_paper_tables() function creates
@@ -160,12 +161,52 @@ PAPER_PORTFOLIO_INDEXES = [
     """,
 ]
 
+SLIPPAGE_LOG_SQL = """
+CREATE TABLE IF NOT EXISTS slippage_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    side TEXT NOT NULL,
+    order_size INTEGER NOT NULL DEFAULT 1,
+    bid REAL NOT NULL,
+    ask REAL NOT NULL,
+    mid REAL NOT NULL,
+    fill_price REAL NOT NULL,
+    slippage REAL NOT NULL,
+    slippage_pct REAL NOT NULL,
+    slippage_factor REAL NOT NULL,
+    spread REAL NOT NULL,
+    delta REAL,
+    dte INTEGER,
+    volume INTEGER,
+    vix REAL,
+    model_tier TEXT NOT NULL DEFAULT 'dynamic',
+    strategy_id INTEGER REFERENCES strategies(id)
+)
+"""
+
+SLIPPAGE_LOG_INDEXES = [
+    """
+    CREATE INDEX IF NOT EXISTS idx_slippage_log_timestamp
+    ON slippage_log (timestamp)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_slippage_log_strategy
+    ON slippage_log (strategy_id, timestamp)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_slippage_log_model
+    ON slippage_log (model_tier, timestamp)
+    """,
+]
+
 ALL_TABLE_SQL = [
     PAPER_ORDERS_SQL,
     PAPER_FILLS_SQL,
     PAPER_POSITIONS_SQL,
     PAPER_TRADES_SQL,
     PAPER_PORTFOLIO_SQL,
+    SLIPPAGE_LOG_SQL,
 ]
 
 ALL_INDEX_SQL = (
@@ -174,6 +215,7 @@ ALL_INDEX_SQL = (
     + PAPER_POSITIONS_INDEXES
     + PAPER_TRADES_INDEXES
     + PAPER_PORTFOLIO_INDEXES
+    + SLIPPAGE_LOG_INDEXES
 )
 
 
