@@ -4,7 +4,7 @@ Behavior:
     - Runs a @tasks.loop every config.update_interval_minutes during market hours (9:30-16:00 ET)
     - Waits until 9:15 ET to post a pre-market analysis
     - At 16:05 ET, sends a post-market summary
-    - At 16:05 ET, runs ML daily update (features, regime, vol, sentiment, anomaly)
+    - At 16:10 ET, runs ML daily update (features, regime, vol, sentiment, anomaly)
     - At 16:30 ET, runs ML reasoning briefing and posts to journal channel
     - Each iteration: fetch all chains, analyze, generate commentary, post dashboard embed
     - Tracks last_analysis for the /status command
@@ -261,7 +261,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
     # -- ML daily update pipeline (Phase 3) ------------------------------------
 
     async def _handle_ml_daily_update(self) -> None:
-        """Run ML daily update at 16:05 ET (after post-market).
+        """Run ML daily update at 16:10 ET (after post-market summary at 16:05).
 
         Sequentially updates: features -> regime -> vol -> sentiment -> anomaly.
         Each step has error handling -- if one model fails, others continue.
@@ -272,7 +272,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
         now = _now_et()
         ml_update_time = time(
             config.market_close_hour,
-            config.postmarket_post_minute,  # 16:05 ET
+            config.postmarket_post_minute + 5,  # 16:10 ET (5 min after post-market)
         )
 
         if now.time() < ml_update_time:
