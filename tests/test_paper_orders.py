@@ -16,6 +16,7 @@ from src.data import OptionContract, OptionsChain
 from src.paper.models import LegSpec, PaperTradingConfig, SimulatedFill
 from src.paper.orders import FillSimulator, OrderManager, _calculate_net_fill
 from src.paper.schema import init_paper_tables
+from src.paper.slippage import FixedSlippage
 
 
 def _make_config(**overrides) -> PaperTradingConfig:
@@ -124,9 +125,9 @@ class TestFillSimulator:
     """Tests for the FillSimulator class."""
 
     def test_simulate_fill_buy(self):
-        """Buy should fill above mid-price."""
+        """Buy should fill above mid-price (using FixedSlippage for determinism)."""
         config = _make_config(slippage_pct=0.10)
-        sim = FillSimulator(config)
+        sim = FillSimulator(config, slippage_model=FixedSlippage(fixed_cents=0.02))
         chain = _make_chain()
 
         leg = LegSpec("long_put", "put", 5750.0, date(2025, 3, 21), "buy")
@@ -134,7 +135,7 @@ class TestFillSimulator:
 
         assert fill is not None
         assert fill.leg_name == "long_put"
-        # Mid = 1.90, spread = 0.20, slippage = 0.20 * 0.10 = 0.02
+        # Mid = 1.90, fixed slippage = $0.02
         # Fill = 1.90 + 0.02 = 1.92
         assert fill.fill_price == pytest.approx(1.92, abs=0.01)
         assert fill.mid == pytest.approx(1.90, abs=0.01)
@@ -217,9 +218,14 @@ class TestFillSimulator:
         assert fills[1].leg_name == "long_put"
 
     def test_simulate_fill_zero_spread(self):
-        """Zero spread should produce fill at mid (no slippage)."""
+        """Zero spread with FixedSlippage should produce fill at mid (no spread to offset).
+
+        Note: DynamicSpreadSlippage estimates a synthetic spread when
+        bid == ask (stale quote), so we use FixedSlippage here to test
+        the zero-spread behavior deterministically.
+        """
         config = _make_config(slippage_pct=0.10)
-        sim = FillSimulator(config)
+        sim = FillSimulator(config, slippage_model=FixedSlippage(fixed_cents=0.02))
         contract = _make_contract(5800.0, bid=3.50, ask=3.50)
         chain = _make_chain([contract])
 
@@ -227,6 +233,8 @@ class TestFillSimulator:
         fill = sim.simulate_fill(leg, chain)
 
         assert fill is not None
+        # FixedSlippage with bid==ask clamps fill to bid-ask range
+        # So fill_price == mid == 3.50
         assert fill.fill_price == fill.mid
         assert fill.slippage == 0.0
 

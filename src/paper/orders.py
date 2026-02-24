@@ -4,11 +4,14 @@ OrderManager handles the lifecycle of simulated orders: submit, fill,
 cancel, and expire. FillSimulator produces realistic fill prices using
 live bid/ask quotes with configurable slippage.
 
-Fill model:
-    fill_price = mid + (spread * slippage_pct * direction_sign)
+Supports pluggable slippage models via the SlippageModel ABC:
+- DynamicSpreadSlippage (default): adapts to delta, DTE, volume, VIX, time
+- FixedSlippage: constant offset from mid (for testing/comparison)
 
-Where direction_sign is +1 for buys (costs more) and -1 for sells
-(receives less), reflecting realistic execution in the options market.
+Fill model (dynamic):
+    fill_price = mid + direction * slippage_factor * half_spread
+
+Where slippage_factor is computed from market conditions and clamped to [0.05, 1.50].
 """
 
 from __future__ import annotations
@@ -22,6 +25,11 @@ import aiosqlite
 
 from src.data import OptionContract, OptionsChain
 from src.paper.models import LegSpec, PaperTradingConfig, SimulatedFill
+from src.paper.slippage import (
+    DynamicSpreadSlippage,
+    OrderSide,
+    SlippageModel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +37,20 @@ logger = logging.getLogger(__name__)
 class FillSimulator:
     """Simulates realistic fill prices using live bid/ask quotes.
 
-    Uses a simple slippage model: fill at mid-price plus a configurable
-    fraction of the bid-ask spread, adjusted for buy/sell direction.
-    Buying costs more than mid; selling receives less than mid.
+    Uses a pluggable SlippageModel to compute fill prices. Defaults to
+    DynamicSpreadSlippage which adapts to market conditions (delta, DTE,
+    volume, VIX, time of day, order size, multi-leg discount).
+
+    For testing, pass a FixedSlippage model for deterministic fills.
     """
 
-    def __init__(self, config: PaperTradingConfig) -> None:
+    def __init__(
+        self,
+        config: PaperTradingConfig,
+        slippage_model: SlippageModel | None = None,
+    ) -> None:
         self._slippage_pct = config.slippage_pct
+        self._model = slippage_model or DynamicSpreadSlippage()
 
     def _find_contract(
         self,
@@ -60,11 +75,15 @@ class FillSimulator:
         self,
         leg: LegSpec,
         chain: OptionsChain,
+        vix: float = 16.0,
+        order_size: int = 1,
+        is_multi_leg: bool = False,
+        timestamp: datetime | None = None,
     ) -> SimulatedFill | None:
         """Simulate a fill for a single leg using live chain data.
 
         Finds the matching contract by strike/expiry/type in the chain,
-        applies the slippage model, and returns fill details.
+        then delegates to the pluggable SlippageModel for price computation.
 
         Returns None if the contract is not found in the chain.
         """
@@ -72,26 +91,29 @@ class FillSimulator:
         if contract is None:
             return None
 
-        bid = contract.bid
-        ask = contract.ask
-        mid = contract.mid
-        spread = contract.spread
+        side = OrderSide.BUY if leg.action == "buy" else OrderSide.SELL
 
-        # Direction sign: +1 for buy (pay more), -1 for sell (receive less)
-        direction_sign = 1.0 if leg.action == "buy" else -1.0
-        slippage = spread * self._slippage_pct * direction_sign
-        fill_price = mid + slippage
-
-        # Clamp fill price within bid/ask bounds
-        fill_price = max(bid, min(ask, fill_price))
+        fill_result = self._model.simulate_fill(
+            bid=contract.bid,
+            ask=contract.ask,
+            side=side,
+            delta=contract.delta,
+            dte=contract.days_to_expiry,
+            volume=contract.volume,
+            open_interest=contract.open_interest,
+            vix=vix,
+            order_size=order_size,
+            is_multi_leg=is_multi_leg,
+            timestamp=timestamp,
+        )
 
         return SimulatedFill(
             leg_name=leg.leg_name,
-            fill_price=round(fill_price, 4),
-            bid=bid,
-            ask=ask,
-            mid=round(mid, 4),
-            slippage=round(abs(slippage), 4),
+            fill_price=round(fill_result.fill_price, 4),
+            bid=contract.bid,
+            ask=contract.ask,
+            mid=round(fill_result.mid_price, 4),
+            slippage=round(fill_result.slippage, 4),
             iv=contract.iv,
             delta=contract.delta,
         )
@@ -100,15 +122,26 @@ class FillSimulator:
         self,
         legs: list[LegSpec],
         chain: OptionsChain,
+        vix: float = 16.0,
+        order_size: int = 1,
+        timestamp: datetime | None = None,
     ) -> list[SimulatedFill] | None:
         """Simulate fills for all legs of a spread.
 
         All-or-nothing: returns None if any leg cannot be filled.
         Returns list of SimulatedFill for each leg on success.
+        Multi-leg discount is automatically applied by the slippage model.
         """
         fills: list[SimulatedFill] = []
+        is_multi_leg = len(legs) > 1
         for leg in legs:
-            fill = self.simulate_fill(leg, chain)
+            fill = self.simulate_fill(
+                leg, chain,
+                vix=vix,
+                order_size=order_size,
+                is_multi_leg=is_multi_leg,
+                timestamp=timestamp,
+            )
             if fill is None:
                 logger.warning(
                     "Cannot fill leg %s: %s %s %.1f exp %s not found in chain",
