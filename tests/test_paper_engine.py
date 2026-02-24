@@ -6,7 +6,7 @@ Uses in-memory SQLite databases and mock options chain data.
 """
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -30,6 +30,10 @@ def _make_config(**overrides) -> PaperTradingConfig:
     return PaperTradingConfig(**defaults)
 
 
+# Use a future expiry so exit monitor does not auto-close positions as expired
+_FUTURE_EXPIRY = date.today() + timedelta(days=30)
+
+
 def _make_contract(
     strike: float,
     option_type: str = "put",
@@ -39,7 +43,7 @@ def _make_contract(
 ) -> OptionContract:
     return OptionContract(
         ticker="SPX",
-        expiry=expiry or date(2025, 3, 21),
+        expiry=expiry or _FUTURE_EXPIRY,
         strike=strike,
         option_type=option_type,
         bid=bid,
@@ -66,8 +70,8 @@ def _make_chain():
 
 def _make_legs():
     return [
-        LegSpec("short_put", "put", 5800.0, date(2025, 3, 21), "sell"),
-        LegSpec("long_put", "put", 5750.0, date(2025, 3, 21), "buy"),
+        LegSpec("short_put", "put", 5800.0, _FUTURE_EXPIRY, "sell"),
+        LegSpec("long_put", "put", 5750.0, _FUTURE_EXPIRY, "buy"),
     ]
 
 
@@ -179,7 +183,7 @@ class TestPaperTradingEngine:
     async def test_tick_expires_stale_orders(self, engine):
         """Tick should expire orders that are too old."""
         # Submit an order with a strike that won't match
-        legs = [LegSpec("test", "put", 9999.0, date(2025, 3, 21), "sell")]
+        legs = [LegSpec("test", "put", 9999.0, _FUTURE_EXPIRY, "sell")]
         order_id = await engine.order_manager.submit_order(
             strategy_id=1, direction="open", legs=legs,
             quantity=1, order_type="market",
@@ -370,8 +374,7 @@ class TestPaperTradingEngine:
 
         # Settlement today should not affect positions expiring in the future
         closed = await engine.handle_eod_settlement()
-        # Whether this closes depends on whether expiry date is <= today
-        # Our test expiry is 2025-03-21 which is in the future
+        # Our test expiry is 30 days from now (via _FUTURE_EXPIRY)
         assert isinstance(closed, list)
 
 

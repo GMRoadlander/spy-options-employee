@@ -193,7 +193,7 @@ class PaperTradingEngine:
             # Step 5: Mark-to-market all open positions
             try:
                 marks = await self.position_tracker.mark_all_open(chains)
-                result.total_unrealized_pnl = sum(pnl for _, pnl in marks)
+                result.total_unrealized_pnl = sum((pnl for _, pnl in marks), 0.0)
             except Exception as e:
                 error_msg = f"Error marking positions: {e}"
                 logger.error(error_msg, exc_info=True)
