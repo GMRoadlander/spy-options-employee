@@ -22,6 +22,8 @@ Phase 3-05 / 3-07 of the ML intelligence layer.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import pickle
@@ -473,8 +475,14 @@ class FlowAnomalyDetector:
             })
         return results
 
+    # HMAC key for pickle integrity verification.
+    _HMAC_KEY = b"flow-anomaly-model-integrity-v1"
+
     def save(self, path: str) -> None:
-        """Persist the fitted model to disk via pickle.
+        """Persist the fitted model to disk via pickle + HMAC signature.
+
+        Writes the model pickle and a companion ``.sig`` file containing
+        an HMAC-SHA256 digest for integrity verification on load.
 
         Args:
             path: File path to write (parent directory must exist).
@@ -486,24 +494,49 @@ class FlowAnomalyDetector:
             raise RuntimeError("Cannot save: FlowAnomalyDetector has not been fitted")
 
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        data = pickle.dumps(self._model)
         with open(path, "wb") as f:
-            pickle.dump(self._model, f)
-        logger.info("Saved FlowAnomalyDetector to %s", path)
+            f.write(data)
+
+        sig = hmac.new(self._HMAC_KEY, data, hashlib.sha256).hexdigest()
+        with open(path + ".sig", "w") as f:
+            f.write(sig)
+
+        logger.info("Saved FlowAnomalyDetector to %s (+sig)", path)
 
     def load(self, path: str) -> None:
-        """Load a previously fitted model from disk.
+        """Load a previously fitted model from disk with HMAC verification.
+
+        If a companion ``.sig`` file exists, verifies the pickle data
+        against the HMAC-SHA256 signature before deserializing.  Legacy
+        files without a ``.sig`` are loaded with a warning.
 
         Args:
             path: File path to read.
 
         Raises:
             FileNotFoundError: If the file does not exist.
+            ValueError: If the HMAC signature does not match (tampered file).
         """
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
 
         with open(path, "rb") as f:
-            self._model = pickle.load(f)  # noqa: S301
+            data = f.read()
+
+        sig_path = path + ".sig"
+        if os.path.exists(sig_path):
+            with open(sig_path, "r") as f:
+                expected_sig = f.read().strip()
+            actual_sig = hmac.new(self._HMAC_KEY, data, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(actual_sig, expected_sig):
+                raise ValueError(
+                    f"HMAC verification failed for {path} — file may be tampered"
+                )
+        else:
+            logger.warning("No .sig file for %s — loading without integrity check", path)
+
+        self._model = pickle.loads(data)  # noqa: S301
         self._fitted = True
         logger.info("Loaded FlowAnomalyDetector from %s", path)
 
@@ -589,14 +622,11 @@ class FlowAnalyzer:
         total_premium = uw_summary.get("total_premium", 0.0)
         dark_pool_volume = uw_summary.get("dark_pool_volume", 0)
 
-        # Approximate dark pool ratio vs total volume
-        # This is a rough heuristic; in production this would be
-        # calibrated against total exchange volume
+        # Dark pool ratio: dark pool volume / total volume (from UW summary).
         dark_pool_ratio = 0.0
-        if total_premium > 0 and dark_pool_volume > 0:
-            # Normalize to a 0-1 ratio (dark pool volume / (dark pool + estimated exchange volume))
-            # Use a baseline estimate of 5x dark pool = total
-            dark_pool_ratio = min(dark_pool_volume / (dark_pool_volume * 5), 1.0) if dark_pool_volume > 0 else 0.0
+        total_volume = uw_summary.get("total_volume", 0)
+        if total_volume > 0 and dark_pool_volume > 0:
+            dark_pool_ratio = min(dark_pool_volume / total_volume, 1.0)
 
         flow_source = "unusual_whales"
         if self._polygon_stream is not None:

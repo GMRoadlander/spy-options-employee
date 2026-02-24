@@ -551,62 +551,87 @@ class PolygonOptionsStream:
     async def listen(
         self,
         callback: Callable[[dict], Awaitable[None]],
+        max_reconnects: int = 10,
     ) -> None:
         """Listen for incoming messages and dispatch to callback.
 
         Parses trade (T) and quote (Q) messages into normalized dicts
-        and calls the callback for each. Reconnects with exponential
-        backoff on disconnection.
+        and calls the callback for each. Automatically reconnects with
+        exponential backoff on disconnection, up to *max_reconnects*
+        attempts.
 
         Args:
             callback: Async function called with each parsed message dict.
+            max_reconnects: Maximum reconnection attempts before giving up.
+                Set to 0 to disable reconnection.
         """
-        if not self._connected or self._ws is None:
-            logger.warning("Polygon WebSocket not connected — cannot listen")
-            return
+        reconnect_count = 0
 
-        try:
-            async for msg in self._ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        data = json.loads(msg.data)
-                    except json.JSONDecodeError:
-                        logger.warning("Polygon WS: invalid JSON: %s", msg.data[:100])
-                        continue
+        while True:
+            if not self._connected or self._ws is None:
+                logger.warning("Polygon WebSocket not connected — cannot listen")
+                return
 
-                    if not isinstance(data, list):
-                        data = [data]
+            try:
+                async for msg in self._ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        try:
+                            data = json.loads(msg.data)
+                        except json.JSONDecodeError:
+                            logger.warning("Polygon WS: invalid JSON: %s", msg.data[:100])
+                            continue
 
-                    for event in data:
-                        parsed = self._parse_event(event)
-                        if parsed is not None:
-                            # Classify trades
-                            if parsed["type"] == "trade":
-                                parsed["classification"] = self._classify_trade(parsed)
-                            await callback(parsed)
+                        if not isinstance(data, list):
+                            data = [data]
 
-                elif msg.type in (
-                    aiohttp.WSMsgType.CLOSED,
-                    aiohttp.WSMsgType.ERROR,
-                ):
-                    logger.warning(
-                        "Polygon WebSocket disconnected: %s", msg.type
-                    )
-                    break
+                        for event in data:
+                            parsed = self._parse_event(event)
+                            if parsed is not None:
+                                # Classify trades
+                                if parsed["type"] == "trade":
+                                    parsed["classification"] = self._classify_trade(parsed)
+                                await callback(parsed)
 
-        except Exception as exc:
-            logger.error("Polygon WebSocket listen error: %s", exc)
+                    elif msg.type in (
+                        aiohttp.WSMsgType.CLOSED,
+                        aiohttp.WSMsgType.ERROR,
+                    ):
+                        logger.warning(
+                            "Polygon WebSocket disconnected: %s", msg.type
+                        )
+                        break
 
-        self._connected = False
+            except Exception as exc:
+                logger.error("Polygon WebSocket listen error: %s", exc)
 
-        # Attempt reconnection with exponential backoff
-        logger.info(
-            "Polygon WebSocket reconnecting in %.1fs...", self._backoff
-        )
-        await asyncio.sleep(self._backoff)
-        self._backoff = min(
-            self._backoff * self._BACKOFF_MULTIPLIER, self._MAX_BACKOFF
-        )
+            self._connected = False
+
+            # Check reconnect budget
+            if reconnect_count >= max_reconnects:
+                logger.error(
+                    "Polygon WebSocket: max reconnects (%d) exhausted — giving up",
+                    max_reconnects,
+                )
+                return
+
+            reconnect_count += 1
+            logger.info(
+                "Polygon WebSocket reconnecting in %.1fs... (attempt %d/%d)",
+                self._backoff,
+                reconnect_count,
+                max_reconnects,
+            )
+            await asyncio.sleep(self._backoff)
+            self._backoff = min(
+                self._backoff * self._BACKOFF_MULTIPLIER, self._MAX_BACKOFF
+            )
+
+            # Attempt reconnect
+            try:
+                await self.connect()
+            except Exception as exc:
+                logger.error("Polygon WebSocket reconnect failed: %s", exc)
+                continue
 
     def _parse_event(self, event: dict) -> dict | None:
         """Parse a raw WebSocket event into a normalized dict.

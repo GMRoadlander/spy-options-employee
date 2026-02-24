@@ -397,36 +397,53 @@ class VolForecaster:
         }
 
     def save(self, path: str) -> None:
-        """Save model state dict, hyperparams, and normalisation stats.
+        """Save model weights, hyperparams, and normalisation stats.
+
+        Saves state_dict to *path* (weights only) and hyperparams +
+        normalisation stats to a companion ``.meta.json`` file.  This
+        separation allows loading weights with ``weights_only=True`` for
+        security.
 
         Args:
-            path: Filesystem path for the checkpoint file.
+            path: Filesystem path for the weights file (e.g., ``model.pt``).
 
         Raises:
             RuntimeError: If model has not been trained.
         """
+        import json as _json
+
         if self._stats is None:
             raise RuntimeError("Cannot save: model has no normalisation stats.")
 
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
-        payload = {
-            "model_state_dict": self.model.state_dict(),
+        # Save weights only (safe for weights_only=True loading).
+        torch.save(self.model.state_dict(), path)
+
+        # Save hyperparams + normalisation stats as JSON sidecar.
+        meta_path = path + ".meta.json"
+        meta = {
             "lookback": self.lookback,
             "hidden_size": self.hidden_size,
             "n_features": self.n_features,
             "stats": {
-                "feature_mean": self._stats["feature_mean"],
-                "feature_std": self._stats["feature_std"],
-                "target_mean": self._stats["target_mean"],
-                "target_std": self._stats["target_std"],
+                "feature_mean": self._stats["feature_mean"].tolist(),
+                "feature_std": self._stats["feature_std"].tolist(),
+                "target_mean": self._stats["target_mean"].tolist(),
+                "target_std": self._stats["target_std"].tolist(),
             },
         }
-        torch.save(payload, path)
-        logger.info("Saved VolForecaster to %s", path)
+        with open(meta_path, "w") as f:
+            _json.dump(meta, f)
+
+        logger.info("Saved VolForecaster to %s (+meta.json)", path)
 
     def load(self, path: str) -> None:
         """Load model from a checkpoint file.
+
+        Attempts secure loading first (weights_only=True + .meta.json
+        sidecar).  Falls back to legacy format (single file with
+        weights_only=False) for backward compatibility.
 
         Args:
             path: Filesystem path of the checkpoint.
@@ -434,27 +451,56 @@ class VolForecaster:
         Raises:
             FileNotFoundError: If *path* does not exist.
         """
+        import json as _json
+
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found: {path}")
 
-        payload = torch.load(path, map_location=self.device, weights_only=False)
+        meta_path = path + ".meta.json"
 
-        # Restore hyperparams.
-        self.lookback = payload["lookback"]
-        self.hidden_size = payload["hidden_size"]
-        self.n_features = payload["n_features"]
+        if os.path.exists(meta_path):
+            # Secure path: load weights with weights_only=True, meta from JSON.
+            with open(meta_path, "r") as f:
+                meta = _json.load(f)
 
-        # Rebuild model with correct architecture.
-        self.model = VolLSTM(
-            n_features=self.n_features,
-            hidden_size=self.hidden_size,
-        ).to(self.device)
-        self.model.load_state_dict(payload["model_state_dict"])
+            self.lookback = meta["lookback"]
+            self.hidden_size = meta["hidden_size"]
+            self.n_features = meta["n_features"]
 
-        # Restore normalisation stats.
-        self._stats = payload["stats"]
+            self.model = VolLSTM(
+                n_features=self.n_features,
+                hidden_size=self.hidden_size,
+            ).to(self.device)
 
-        logger.info("Loaded VolForecaster from %s", path)
+            state_dict = torch.load(path, map_location=self.device, weights_only=True)
+            self.model.load_state_dict(state_dict)
+
+            self._stats = {
+                "feature_mean": np.array(meta["stats"]["feature_mean"], dtype=np.float32),
+                "feature_std": np.array(meta["stats"]["feature_std"], dtype=np.float32),
+                "target_mean": np.array(meta["stats"]["target_mean"], dtype=np.float32),
+                "target_std": np.array(meta["stats"]["target_std"], dtype=np.float32),
+            }
+            logger.info("Loaded VolForecaster from %s (secure format)", path)
+        else:
+            # Legacy fallback: single file with everything.
+            logger.warning(
+                "Loading VolForecaster from legacy format (no .meta.json): %s", path
+            )
+            payload = torch.load(path, map_location=self.device, weights_only=False)
+
+            self.lookback = payload["lookback"]
+            self.hidden_size = payload["hidden_size"]
+            self.n_features = payload["n_features"]
+
+            self.model = VolLSTM(
+                n_features=self.n_features,
+                hidden_size=self.hidden_size,
+            ).to(self.device)
+            self.model.load_state_dict(payload["model_state_dict"])
+
+            self._stats = payload["stats"]
+            logger.info("Loaded VolForecaster from %s (legacy format)", path)
 
     def train(
         self,

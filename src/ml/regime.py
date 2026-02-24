@@ -22,6 +22,8 @@ Usage::
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import pickle
@@ -250,8 +252,15 @@ class RegimeDetector:
 
         return best_n
 
+    # HMAC key derived from the module path (not secret, but ensures
+    # integrity -- a tampered pickle won't pass verification).
+    _HMAC_KEY = b"regime-model-integrity-v1"
+
     def save(self, path: str) -> None:
-        """Serialize the fitted model to *path* using pickle.
+        """Serialize the fitted model to *path* using pickle + HMAC signature.
+
+        Writes the model pickle and a companion ``.sig`` file containing
+        an HMAC-SHA256 digest for integrity verification on load.
 
         Args:
             path: Filesystem path for the pickle file.
@@ -271,21 +280,47 @@ class RegimeDetector:
             "state_perm": self._state_perm,
             "n_train_obs": self._n_train_obs,
         }
+        data = pickle.dumps(payload)
         with open(path, "wb") as fh:
-            pickle.dump(payload, fh)
-        logger.info("Saved regime model to %s", path)
+            fh.write(data)
+
+        # Write HMAC signature file.
+        sig = hmac.new(self._HMAC_KEY, data, hashlib.sha256).hexdigest()
+        with open(path + ".sig", "w") as fh:
+            fh.write(sig)
+
+        logger.info("Saved regime model to %s (+sig)", path)
 
     def load(self, path: str) -> None:
-        """Deserialize a fitted model from *path*.
+        """Deserialize a fitted model from *path* with HMAC verification.
+
+        If a companion ``.sig`` file exists, verifies the pickle data
+        against the HMAC-SHA256 signature before deserializing.  Legacy
+        files without a ``.sig`` are loaded with a warning.
 
         Args:
             path: Filesystem path of the pickle file.
 
         Raises:
             FileNotFoundError: If *path* does not exist.
+            ValueError: If the HMAC signature does not match (tampered file).
         """
         with open(path, "rb") as fh:
-            payload = pickle.load(fh)  # noqa: S301
+            data = fh.read()
+
+        sig_path = path + ".sig"
+        if os.path.exists(sig_path):
+            with open(sig_path, "r") as fh:
+                expected_sig = fh.read().strip()
+            actual_sig = hmac.new(self._HMAC_KEY, data, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(actual_sig, expected_sig):
+                raise ValueError(
+                    f"HMAC verification failed for {path} — file may be tampered"
+                )
+        else:
+            logger.warning("No .sig file for %s — loading without integrity check", path)
+
+        payload = pickle.loads(data)  # noqa: S301
 
         self.n_states = payload["n_states"]
         self.random_state = payload["random_state"]

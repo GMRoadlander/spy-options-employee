@@ -355,6 +355,25 @@ class SpyBot(commands.Bot):
             except Exception as exc:
                 logger.error("Error closing DataManager: %s", exc)
 
+        # Close ML HTTP clients (news, unusual whales)
+        if self.sentiment_manager is not None:
+            try:
+                news_client = getattr(self.sentiment_manager, "_news_client", None)
+                if news_client is not None and hasattr(news_client, "close"):
+                    await news_client.close()
+                    logger.info("NewsClient closed")
+            except Exception as exc:
+                logger.error("Error closing NewsClient: %s", exc)
+
+        if self.flow_analyzer is not None:
+            try:
+                uw_client = getattr(self.flow_analyzer, "_uw_client", None)
+                if uw_client is not None and hasattr(uw_client, "close"):
+                    await uw_client.close()
+                    logger.info("UnusualWhalesClient closed")
+            except Exception as exc:
+                logger.error("Error closing UnusualWhalesClient: %s", exc)
+
         # Clean up old database entries
         if self.store is not None:
             try:

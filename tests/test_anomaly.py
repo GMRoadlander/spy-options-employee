@@ -780,6 +780,7 @@ def _make_mock_uw_client(flow_summary: dict | None = None) -> MagicMock:
             "golden_sweep_count": 2,
             "net_sentiment": 0.3,
             "dark_pool_volume": 50000,
+            "total_volume": 200000,
         }
     client.get_flow_summary = AsyncMock(return_value=flow_summary)
     return client
@@ -840,6 +841,7 @@ class TestFlowAnalyzer:
             "golden_sweep_count": 2,
             "net_sentiment": 0.3,
             "dark_pool_volume": 50000,
+            "total_volume": 100000,
         })
         analyzer = FlowAnalyzer(uw_client=uw_client)
 

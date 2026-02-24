@@ -292,17 +292,16 @@ def compute_hurst_exponent(
     # Compute log returns
     log_returns = np.diff(np.log(arr))
 
-    lags = list(range(2, max_lag + 1))
-    rs_values: list[float] = []
+    # Single-loop: track (lag, mean_rs) pairs together to avoid index misalignment.
+    valid_pairs: list[tuple[int, float]] = []
 
-    for lag in lags:
-        rs_list: list[float] = []
-        n = len(log_returns)
-        # Split into non-overlapping sub-series of length `lag`
+    n = len(log_returns)
+    for lag in range(2, max_lag + 1):
         num_subseries = n // lag
         if num_subseries == 0:
             continue
 
+        rs_list: list[float] = []
         for i in range(num_subseries):
             subseries = log_returns[i * lag : (i + 1) * lag]
             mean_sub = np.mean(subseries)
@@ -314,33 +313,17 @@ def compute_hurst_exponent(
                 rs_list.append(r / s)
 
         if rs_list:
-            rs_values.append(float(np.mean(rs_list)))
-        else:
-            # Cannot compute R/S for this lag; skip
-            lags_copy = lags  # noqa: F841
-            continue
+            valid_pairs.append((lag, float(np.mean(rs_list))))
 
     # Need at least 2 valid points for OLS
-    # Filter lags to match rs_values length
-    valid_lags = []
-    valid_rs = []
-    lag_idx = 0
-    for lag in range(2, max_lag + 1):
-        n = len(log_returns)
-        num_subseries = n // lag
-        if num_subseries == 0:
-            continue
-        if lag_idx < len(rs_values):
-            valid_lags.append(lag)
-            valid_rs.append(rs_values[lag_idx])
-            lag_idx += 1
-
-    if len(valid_lags) < 2:
+    if len(valid_pairs) < 2:
         return 0.5
 
     # OLS fit: log(R/S) = H * log(lag) + c
-    log_lags = np.log(np.array(valid_lags, dtype=float))
-    log_rs = np.log(np.array(valid_rs, dtype=float))
+    valid_lags_arr = np.array([p[0] for p in valid_pairs], dtype=float)
+    valid_rs_arr = np.array([p[1] for p in valid_pairs], dtype=float)
+    log_lags = np.log(valid_lags_arr)
+    log_rs = np.log(valid_rs_arr)
 
     # Simple OLS for slope
     n = len(log_lags)
