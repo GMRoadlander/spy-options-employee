@@ -36,6 +36,14 @@ class StrategyCog(commands.Cog, name="Strategy"):
         self.bot = bot
         logger.info("StrategyCog loaded")
 
+    @staticmethod
+    def _is_authorized(interaction: discord.Interaction) -> bool:
+        """Check if user has manage_guild permission for sensitive commands."""
+        if interaction.guild is None:
+            return False
+        perms = interaction.permissions
+        return perms.manage_guild
+
     # -- /strategy define ------------------------------------------------
 
     @app_commands.command(
@@ -43,6 +51,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
         description="Define a new strategy from natural language description",
     )
     @app_commands.describe(description="Plain English strategy description")
+    @commands.cooldown(1, 30.0, commands.BucketType.user)
     async def strategy_define(
         self, interaction: discord.Interaction, description: str
     ) -> None:
@@ -61,9 +70,17 @@ class StrategyCog(commands.Cog, name="Strategy"):
             from src.ai.strategy_parser import StrategyParseError
 
             template, explanation = await parser.parse(description)
-        except Exception as exc:
+        except StrategyParseError as exc:
+            logger.warning("Strategy parse error: %s", exc)
             await interaction.followup.send(
-                f"Failed to parse strategy: {exc}",
+                "Failed to parse strategy. Please rephrase and try again.",
+                ephemeral=True,
+            )
+            return
+        except Exception as exc:
+            logger.error("Unexpected error parsing strategy: %s", exc, exc_info=True)
+            await interaction.followup.send(
+                "An unexpected error occurred. Please try again later.",
                 ephemeral=True,
             )
             return
@@ -165,6 +182,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
         name="Strategy name or ID",
         changes="What to change (plain English)",
     )
+    @commands.cooldown(1, 30.0, commands.BucketType.user)
     async def strategy_edit(
         self,
         interaction: discord.Interaction,
@@ -204,30 +222,30 @@ class StrategyCog(commands.Cog, name="Strategy"):
             raw = yaml.safe_load(yaml_str)
             template = loader._dict_to_template(raw)
         except Exception as exc:
+            logger.error("Failed to load template for strategy #%d: %s", strategy["id"], exc, exc_info=True)
             await interaction.followup.send(
-                f"Failed to load current template: {exc}", ephemeral=True,
+                "Failed to load current template. Please check strategy configuration.",
+                ephemeral=True,
             )
             return
 
         try:
             refined, explanation = await parser.refine(template, changes)
         except Exception as exc:
+            logger.error("Failed to refine strategy #%d: %s", strategy["id"], exc, exc_info=True)
             await interaction.followup.send(
-                f"Failed to refine strategy: {exc}", ephemeral=True,
+                "Failed to refine strategy. Please rephrase and try again.",
+                ephemeral=True,
             )
             return
 
-        # Update in DB
+        # Update in DB via lifecycle manager (C3: no raw SQL)
         new_yaml = yaml.dump(
             loader._template_to_dict(refined),
             default_flow_style=False,
             sort_keys=False,
         )
-        await manager._db.execute(
-            "UPDATE strategies SET template_yaml = ?, updated_at = ? WHERE id = ?",
-            (new_yaml, __import__("datetime").datetime.now().isoformat(), strategy["id"]),
-        )
-        await manager._db.commit()
+        await manager.update_template(strategy["id"], new_yaml)
 
         from src.discord_bot.embeds import build_strategy_define_embed
         embed = build_strategy_define_embed(refined, explanation, strategy["id"])
@@ -246,6 +264,13 @@ class StrategyCog(commands.Cog, name="Strategy"):
     ) -> None:
         """Retire a strategy."""
         await interaction.response.defer()
+
+        if not self._is_authorized(interaction):
+            await interaction.followup.send(
+                "You need **Manage Server** permission to retire strategies.",
+                ephemeral=True,
+            )
+            return
 
         manager = getattr(self.bot, "strategy_manager", None)
         if manager is None:
@@ -271,8 +296,10 @@ class StrategyCog(commands.Cog, name="Strategy"):
                 f"Strategy **{strategy['name']}** (#{strategy['id']}) has been retired.",
             )
         except Exception as exc:
+            logger.error("Failed to retire strategy #%d: %s", strategy["id"], exc, exc_info=True)
             await interaction.followup.send(
-                f"Failed to retire strategy: {exc}", ephemeral=True,
+                "Failed to retire strategy. Please try again.",
+                ephemeral=True,
             )
 
     # -- /backtest -------------------------------------------------------
@@ -329,8 +356,10 @@ class StrategyCog(commands.Cog, name="Strategy"):
             template = loader._dict_to_template(raw)
             template.metadata["id"] = str(strategy["id"])
         except Exception as exc:
+            logger.error("Failed to load template for backtest on strategy #%d: %s", strategy["id"], exc, exc_info=True)
             await interaction.followup.send(
-                f"Failed to load template: {exc}", ephemeral=True,
+                "Failed to load template. Please check strategy configuration.",
+                ephemeral=True,
             )
             return
 

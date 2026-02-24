@@ -254,3 +254,158 @@ def test_cog_has_setup_function():
     from src.discord_bot import cog_strategy
     assert hasattr(cog_strategy, "setup")
     assert callable(cog_strategy.setup)
+
+
+# -- Functional Cog Tests (W15) -----------------------------------------------
+
+
+def _make_interaction(*, manage_guild: bool = True) -> MagicMock:
+    """Create a mock Discord Interaction with followup support."""
+    interaction = AsyncMock(spec=discord.Interaction)
+    interaction.response = AsyncMock()
+    interaction.followup = AsyncMock()
+    interaction.user = MagicMock()
+    interaction.user.__str__ = MagicMock(return_value="TestUser#1234")
+    perms = MagicMock()
+    perms.manage_guild = manage_guild
+    interaction.permissions = perms
+    interaction.guild = MagicMock()
+    return interaction
+
+
+@pytest.mark.asyncio
+async def test_strategy_define_no_parser():
+    """strategy_define sends error when parser is not attached to bot."""
+    from src.discord_bot.cog_strategy import StrategyCog
+
+    bot = MagicMock(spec=["strategy_parser"])
+    bot.strategy_parser = None
+    cog = StrategyCog(bot)
+
+    interaction = _make_interaction()
+    await cog.strategy_define.callback(cog, interaction, description="sell iron condors")
+
+    interaction.followup.send.assert_awaited_once()
+    msg = interaction.followup.send.call_args
+    assert "not available" in msg.kwargs.get("content", msg.args[0] if msg.args else "").lower() or \
+           "not available" in str(msg).lower()
+
+
+@pytest.mark.asyncio
+async def test_strategy_list_empty():
+    """strategy_list returns embed with 0 strategies when DB is empty."""
+    from src.discord_bot.cog_strategy import StrategyCog
+
+    bot = MagicMock()
+    bot.strategy_manager = AsyncMock()
+    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    cog = StrategyCog(bot)
+
+    interaction = _make_interaction()
+    await cog.strategy_list.callback(cog, interaction, status=None)
+
+    interaction.followup.send.assert_awaited_once()
+    sent_kwargs = interaction.followup.send.call_args.kwargs
+    embed = sent_kwargs.get("embed")
+    assert embed is not None
+    assert "0 strategies found" in embed.description
+
+
+@pytest.mark.asyncio
+async def test_strategy_show_not_found():
+    """strategy_show sends 'not found' when strategy doesn't exist."""
+    from src.discord_bot.cog_strategy import StrategyCog
+
+    bot = MagicMock()
+    bot.strategy_manager = AsyncMock()
+    bot.strategy_manager.get = AsyncMock(return_value=None)
+    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    cog = StrategyCog(bot)
+
+    interaction = _make_interaction()
+    await cog.strategy_show.callback(cog, interaction, name="nonexistent")
+
+    interaction.followup.send.assert_awaited_once()
+    call_args = interaction.followup.send.call_args
+    msg = call_args.kwargs.get("content", call_args.args[0] if call_args.args else "")
+    assert "not found" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_strategy_edit_template_error_no_leak():
+    """strategy_edit does not leak exception details when template load fails."""
+    from src.discord_bot.cog_strategy import StrategyCog
+
+    bot = MagicMock()
+    bot.strategy_parser = MagicMock()
+    bot.strategy_manager = AsyncMock()
+    bot.strategy_manager.get = AsyncMock(return_value=_make_strategy_dict(
+        1, "My IC", "defined", template_yaml="invalid: [yaml: {{broken"
+    ))
+    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    cog = StrategyCog(bot)
+
+    interaction = _make_interaction()
+
+    with patch("yaml.safe_load", side_effect=Exception("YAML parse error: unexpected token at line 1")):
+        await cog.strategy_edit.callback(cog, interaction, name="1", changes="widen wings")
+
+    interaction.followup.send.assert_awaited_once()
+    call_args = interaction.followup.send.call_args
+    msg = call_args.kwargs.get("content", call_args.args[0] if call_args.args else "")
+    # Must NOT contain the raw exception text
+    assert "YAML parse error" not in msg
+    assert "unexpected token" not in msg
+    # Must contain a generic message
+    assert "failed" in msg.lower() or "check" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_backtest_template_error_no_leak():
+    """backtest does not leak exception details when template load fails."""
+    from src.discord_bot.cog_strategy import StrategyCog
+
+    bot = MagicMock()
+    bot.strategy_manager = AsyncMock()
+    bot.strategy_manager.get = AsyncMock(return_value=_make_strategy_dict(
+        1, "My IC", "defined", template_yaml="some: yaml"
+    ))
+    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    bot.strategy_manager.transition = AsyncMock()
+    cog = StrategyCog(bot)
+
+    interaction = _make_interaction()
+    interaction.channel = AsyncMock()
+
+    with patch("yaml.safe_load", side_effect=Exception("sensitive DB path /var/lib/data.db")):
+        await cog.backtest.callback(cog, interaction, name="1", years=5)
+
+    # Find the ephemeral followup send (the one with error)
+    calls = interaction.followup.send.call_args_list
+    error_msg_found = False
+    for call in calls:
+        msg = call.kwargs.get("content", call.args[0] if call.args else "")
+        if "sensitive" in msg or "/var/lib" in msg:
+            error_msg_found = True
+    assert not error_msg_found, "Raw exception leaked to Discord"
+
+
+@pytest.mark.asyncio
+async def test_strategy_retire_success():
+    """strategy_retire transitions strategy and sends confirmation."""
+    from src.discord_bot.cog_strategy import StrategyCog
+
+    bot = MagicMock()
+    bot.strategy_manager = AsyncMock()
+    bot.strategy_manager.get = AsyncMock(return_value=_make_strategy_dict(1, "My IC", "defined"))
+    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    bot.strategy_manager.transition = AsyncMock()
+    cog = StrategyCog(bot)
+
+    interaction = _make_interaction(manage_guild=True)
+    await cog.strategy_retire.callback(cog, interaction, name="1")
+
+    bot.strategy_manager.transition.assert_awaited_once()
+    interaction.followup.send.assert_awaited_once()
+    msg = str(interaction.followup.send.call_args)
+    assert "retired" in msg.lower()
