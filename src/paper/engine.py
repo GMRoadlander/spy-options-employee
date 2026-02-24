@@ -1,19 +1,19 @@
 """Paper trading engine orchestrator.
 
 PaperTradingEngine is the main entry point for the paper trading subsystem.
-It coordinates OrderManager, PositionTracker, and PnLCalculator through
-a tick-based loop driven by the SchedulerCog (every 2 minutes during
-market hours).
+It coordinates OrderManager, PositionTracker, PnLCalculator, ShadowModeManager,
+and ExitMonitor through a tick-based loop driven by the SchedulerCog (every
+2 minutes during market hours).
 
 The engine:
-1. Processes pending orders (fill attempts, expirations)
-2. Marks all open positions to market
-3. Takes daily portfolio snapshots at EOD
-4. Provides portfolio summary and strategy results for Discord display
-
-Note: Shadow mode (auto-generating trades from strategy signals) and
-exit monitoring are implemented in separate modules (sub-plan 4-4).
-This engine provides the hooks they will plug into.
+1. Checks for new entry signals on PAPER strategies (ShadowModeManager)
+2. Processes pending orders (fill attempts, expirations)
+3. Opens positions from newly filled orders
+4. Marks all open positions to market
+5. Checks exit conditions on all positions (ExitMonitor)
+6. Handles expirations/settlements (ExitMonitor)
+7. Takes daily portfolio snapshots at EOD (PnLCalculator)
+8. Provides portfolio summary and strategy results for Discord display
 """
 
 from __future__ import annotations
@@ -35,10 +35,12 @@ from src.paper.models import (
     SimulatedFill,
     TickResult,
 )
+from src.paper.exits import ExitMonitor
 from src.paper.orders import OrderManager
 from src.paper.pnl import PnLCalculator
 from src.paper.positions import PositionTracker
 from src.paper.schema import init_paper_tables
+from src.paper.shadow import ShadowModeManager
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,21 @@ class PaperTradingEngine:
         self.position_tracker = PositionTracker(db, config)
         self.pnl_calculator = PnLCalculator(db, config)
 
+        # Shadow mode and exit monitoring (sub-plan 4-4)
+        self.shadow_manager = ShadowModeManager(
+            db=db,
+            strategy_manager=strategy_manager,
+            order_manager=self.order_manager,
+            position_tracker=self.position_tracker,
+            config=config,
+        )
+        self.exit_monitor = ExitMonitor(
+            db=db,
+            strategy_manager=strategy_manager,
+            position_tracker=self.position_tracker,
+            config=config,
+        )
+
         # Daily state
         self._tick_count_today: int = 0
         self._daily_errors: list[str] = []
@@ -92,14 +109,14 @@ class PaperTradingEngine:
         """Main loop entry point -- called every scheduler cycle.
 
         Processing order:
-        1. Expire stale pending orders
-        2. Attempt to fill remaining pending orders
-        3. Open positions from newly filled orders
-        4. Mark-to-market all open positions
-        5. Return tick summary
-
-        Note: Steps for entry signal detection and exit condition checking
-        are added by sub-plan 4-4 (ShadowModeManager, ExitMonitor).
+        1. Check for new entry signals on PAPER strategies (ShadowModeManager)
+        2. Expire stale pending orders
+        3. Attempt to fill remaining pending orders
+        4. Open positions from newly filled orders
+        5. Mark-to-market all open positions
+        6. Check exit conditions on all positions (ExitMonitor)
+        7. Submit close orders for triggered exit signals
+        8. Return tick summary
 
         Args:
             chains: Dict of ticker -> live OptionsChain.
@@ -113,11 +130,20 @@ class PaperTradingEngine:
         result = TickResult(timestamp=now)
 
         try:
-            # Step 1: Expire stale orders
+            # Step 1: Check for new entry signals (shadow mode)
+            try:
+                entry_order_ids = await self.shadow_manager.check_entry_signals(chains)
+                result.orders_submitted = len(entry_order_ids)
+            except Exception as e:
+                error_msg = f"Error checking entry signals: {e}"
+                logger.error(error_msg, exc_info=True)
+                result.errors.append(error_msg)
+
+            # Step 2: Expire stale orders
             expired = await self.order_manager.expire_stale_orders()
             result.orders_cancelled = expired
 
-            # Step 2: Fill pending orders
+            # Step 3: Fill pending orders
             pending = await self.order_manager.get_pending_orders()
             for order in pending:
                 try:
@@ -125,7 +151,7 @@ class PaperTradingEngine:
                     if fills is not None:
                         result.orders_filled += 1
 
-                        # Step 3: Open positions from fills (if opening order)
+                        # Step 4: Open positions from fills (if opening order)
                         if order["direction"] == "open":
                             position_id = await self.position_tracker.open_position(
                                 strategy_id=order["strategy_id"],
@@ -164,12 +190,42 @@ class PaperTradingEngine:
                     logger.error(error_msg, exc_info=True)
                     result.errors.append(error_msg)
 
-            # Step 4: Mark-to-market all open positions
+            # Step 5: Mark-to-market all open positions
             try:
                 marks = await self.position_tracker.mark_all_open(chains)
                 result.total_unrealized_pnl = sum(pnl for _, pnl in marks)
             except Exception as e:
                 error_msg = f"Error marking positions: {e}"
+                logger.error(error_msg, exc_info=True)
+                result.errors.append(error_msg)
+
+            # Step 6: Check exit conditions on all positions
+            try:
+                exit_signals = await self.exit_monitor.check_all_positions(chains)
+                for signal in exit_signals:
+                    result.exit_signals.append(
+                        f"#{signal.position_id}:{signal.reason}"
+                    )
+                    # Step 7: Submit close orders for triggered signals
+                    try:
+                        close_order_id = await self.submit_exit_order(
+                            position_id=signal.position_id,
+                            reason=signal.reason,
+                        )
+                        if close_order_id is not None:
+                            logger.info(
+                                "Exit signal: submitted close order #%d for position #%d (%s)",
+                                close_order_id, signal.position_id, signal.reason,
+                            )
+                    except Exception as e:
+                        error_msg = (
+                            f"Error submitting exit order for position "
+                            f"#{signal.position_id}: {e}"
+                        )
+                        logger.error(error_msg, exc_info=True)
+                        result.errors.append(error_msg)
+            except Exception as e:
+                error_msg = f"Error checking exit conditions: {e}"
                 logger.error(error_msg, exc_info=True)
                 result.errors.append(error_msg)
 
@@ -183,72 +239,48 @@ class PaperTradingEngine:
 
         return result
 
-    async def handle_eod_settlement(self) -> list[int]:
+    async def handle_eod_settlement(
+        self,
+        chains: dict[str, OptionsChain] | None = None,
+    ) -> list[int]:
         """Handle end-of-day settlement for expiring positions.
 
-        Called at post-market (16:05 ET). Closes positions with legs
-        expiring today using the last available mark as settlement price.
+        Delegates to ExitMonitor.handle_settlements() which correctly
+        handles AM/PM settlement types:
+        - PM-settled (SPXW, 0DTE): auto-close at 16:00 ET using last quote
+        - AM-settled (SPX monthly, 3rd Friday): auto-close Thursday EOD
+
+        Called at post-market (16:05 ET) by the scheduler.
+
+        Args:
+            chains: Optional live chains for settlement pricing. If None,
+                    uses empty dict (settlement uses spot=0.0 fallback).
 
         Returns:
             List of closed position IDs.
         """
-        today = date.today()
-        positions = await self.position_tracker.get_open_positions()
-        closed_ids = []
+        if chains is None:
+            chains = {}
 
-        for pos in positions:
-            legs = pos.get("legs", [])
-            if isinstance(legs, str):
-                legs = json.loads(legs)
-
-            # Check if any leg expires today
-            has_expiring = False
-            for leg in legs:
-                expiry_str = leg.get("expiry", "")
-                try:
-                    expiry = date.fromisoformat(expiry_str)
-                    if expiry <= today:
-                        has_expiring = True
-                        break
-                except (ValueError, TypeError):
-                    continue
-
-            if has_expiring:
-                # Use current mark as settlement proxy
-                # In production, this would use the actual settlement price
-                settlement_mark = pos.get("current_mark", 0.0)
-                # Use spot price from last mark as settlement
-                # For now, settle at the current mark value
-                try:
-                    # Calculate settlement from current mark
-                    # The position's entry_price + current unrealized gives us the total
-                    entry_price = pos.get("entry_price", 0.0)
-                    # We need a settlement price for handle_expiration
-                    # Use a reasonable default based on leg structure
-                    trade_id = await self.position_tracker.handle_expiration(
-                        position_id=pos["id"],
-                        settlement_price=0.0,  # Will be overridden in sub-plan 4-4 with live data
-                    )
-                    closed_ids.append(pos["id"])
-                    logger.info(
-                        "EOD settlement: position #%d -> trade #%d",
-                        pos["id"], trade_id,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "Error settling position #%d: %s",
-                        pos["id"], e, exc_info=True,
-                    )
-
-        return closed_ids
+        try:
+            return await self.exit_monitor.handle_settlements(chains)
+        except Exception as e:
+            logger.error("EOD settlement error: %s", e, exc_info=True)
+            return []
 
     async def start_of_day(self) -> None:
         """Reset daily state at pre-market.
 
-        Called at 9:15 ET by the scheduler.
+        Called at 9:15 ET by the scheduler. Resets:
+        - Tick counter
+        - Daily error log
+        - Shadow mode daily entry tracking
+        - Exit monitor template cache
         """
         self._tick_count_today = 0
         self._daily_errors.clear()
+        self.shadow_manager.reset_daily_state()
+        self.exit_monitor.clear_template_cache()
         logger.info("Paper trading engine: start of day")
 
     async def get_portfolio_summary(self) -> PortfolioSummary:
