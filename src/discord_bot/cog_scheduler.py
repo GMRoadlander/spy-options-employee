@@ -2,11 +2,11 @@
 
 Behavior:
     - Runs a @tasks.loop every config.update_interval_minutes during market hours (9:30-16:00 ET)
-    - Waits until 9:15 ET to post a pre-market analysis
-    - At 16:05 ET, sends a post-market summary
+    - Waits until 9:15 ET to post a pre-market analysis and call paper engine start_of_day()
+    - Each market-hours tick: fetch chains, analyze, run paper engine tick
+    - At 16:05 ET, sends a post-market summary, runs paper EOD settlement + daily snapshot
     - At 16:10 ET, runs ML daily update (features, regime, vol, sentiment, anomaly)
     - At 16:30 ET, runs ML reasoning briefing and posts to journal channel
-    - Each iteration: fetch all chains, analyze, generate commentary, post dashboard embed
     - Tracks last_analysis for the /status command
 """
 
@@ -130,6 +130,9 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
     async def _run_full_cycle(self) -> dict[str, AnalysisResult]:
         """Fetch all chains, run analysis on each, and return results.
 
+        After analysis, runs the paper trading engine tick if available,
+        passing the live chain data for order fills and mark-to-market.
+
         Returns:
             Dict mapping ticker to AnalysisResult for successful analyses.
         """
@@ -155,6 +158,25 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             logger.info("Scheduler cycle complete: analyzed %s", list(results.keys()))
         else:
             logger.warning("Scheduler cycle produced no results")
+
+        # Run paper trading engine tick with live chain data
+        paper_engine = getattr(self.bot, "paper_engine", None)
+        if paper_engine is not None and chains:
+            try:
+                tick_result = await paper_engine.tick(chains)
+                if tick_result.orders_submitted or tick_result.orders_filled or tick_result.positions_closed:
+                    logger.info(
+                        "Paper engine tick: submitted=%d filled=%d opened=%d closed=%d exits=%d",
+                        tick_result.orders_submitted,
+                        tick_result.orders_filled,
+                        tick_result.positions_opened,
+                        tick_result.positions_closed,
+                        len(tick_result.exit_signals),
+                    )
+                if tick_result.errors:
+                    logger.warning("Paper engine tick errors: %s", tick_result.errors)
+            except Exception as exc:
+                logger.error("Paper engine tick failed: %s", exc, exc_info=True)
 
         return results
 
@@ -217,7 +239,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             logger.error("Failed to post dashboard: %s", exc)
 
     async def _handle_premarket(self) -> None:
-        """Post pre-market analysis at 9:15 ET."""
+        """Post pre-market analysis at 9:15 ET and initialize paper engine."""
         if self._premarket_posted_today:
             return
 
@@ -229,6 +251,16 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
 
         if now.time() >= premarket_time:
             logger.info("Posting pre-market analysis")
+
+            # Initialize paper trading engine for the day
+            paper_engine = getattr(self.bot, "paper_engine", None)
+            if paper_engine is not None:
+                try:
+                    await paper_engine.start_of_day()
+                    logger.info("Paper engine: start of day complete")
+                except Exception as exc:
+                    logger.error("Paper engine start_of_day failed: %s", exc, exc_info=True)
+
             results = await self._run_full_cycle()
             if results:
                 await self._post_dashboard(results, title_prefix="Pre-Market")
@@ -241,7 +273,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
                         await alerts_cog.check_alerts(result)  # type: ignore[attr-defined]
 
     async def _handle_postmarket(self) -> None:
-        """Post post-market summary at 16:05 ET."""
+        """Post post-market summary at 16:05 ET, run paper EOD settlement."""
         if self._postmarket_posted_today:
             return
 
@@ -257,6 +289,35 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             if results:
                 await self._post_dashboard(results, title_prefix="Post-Market Summary")
                 self._postmarket_posted_today = True
+
+            # Paper trading: EOD settlement and daily snapshot
+            paper_engine = getattr(self.bot, "paper_engine", None)
+            if paper_engine is not None:
+                # Get the latest chains for settlement pricing
+                try:
+                    dm = self.bot.data_manager  # type: ignore[attr-defined]
+                    chains = await dm.get_all_chains()
+                except Exception:
+                    chains = {}
+
+                # Handle EOD settlement (AM/PM)
+                try:
+                    closed_ids = await paper_engine.handle_eod_settlement(chains)
+                    if closed_ids:
+                        logger.info(
+                            "Paper engine EOD: settled %d positions (%s)",
+                            len(closed_ids),
+                            ", ".join(f"#{pid}" for pid in closed_ids),
+                        )
+                except Exception as exc:
+                    logger.error("Paper engine EOD settlement failed: %s", exc, exc_info=True)
+
+                # Take daily portfolio snapshot
+                try:
+                    await paper_engine.pnl_calculator.take_daily_snapshot()
+                    logger.info("Paper engine: daily snapshot complete")
+                except Exception as exc:
+                    logger.error("Paper engine daily snapshot failed: %s", exc, exc_info=True)
 
     # -- ML daily update pipeline (Phase 3) ------------------------------------
 
