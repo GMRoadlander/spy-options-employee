@@ -40,6 +40,10 @@ class SpyBot(commands.Bot):
         self.strategy_parser = None  # Optional: StrategyParser (Phase 2-3)
         self.hypothesis_manager = None  # Optional: HypothesisManager (Phase 2-3)
 
+        # Paper Trading (Phase 4) -- optional, bot runs without them
+        self.paper_engine = None  # Optional: PaperTradingEngine
+        self.portfolio_analyzer = None  # Optional: PortfolioAnalyzer (Phase 4-5)
+
         # ML Intelligence Layer (Phase 3) -- all optional, bot runs without them
         self.feature_store = None
         self.regime_manager = None
@@ -134,6 +138,22 @@ class SpyBot(commands.Bot):
         # Each component is optional -- bot runs without any ML components.
         await self._init_ml_components()
 
+        # -- Phase 4: Paper Trading Engine initialization ----------------------
+        await self._init_paper_trading()
+
+        # Log Phase 4 summary
+        paper_components = {
+            "PaperTradingEngine": self.paper_engine is not None,
+            "PortfolioAnalyzer": self.portfolio_analyzer is not None,
+        }
+        paper_active = [k for k, v in paper_components.items() if v]
+        logger.info(
+            "Paper trading initialization: %d/%d active [%s]",
+            len(paper_active),
+            len(paper_components),
+            ", ".join(paper_active) if paper_active else "none",
+        )
+
         # Load cogs
         cog_extensions = [
             "src.discord_bot.cog_analysis",
@@ -160,6 +180,90 @@ class SpyBot(commands.Bot):
             logger.info("Synced %d slash commands", len(synced))
         except Exception as exc:
             logger.error("Failed to sync slash commands: %s", exc, exc_info=True)
+
+    async def _init_paper_trading(self) -> None:
+        """Initialize Phase 4 paper trading components with graceful degradation.
+
+        Requires Store (for database) and StrategyManager. Bot runs fine
+        without paper trading if either is unavailable.
+        """
+        from src.config import config
+
+        # Requires Store._db and StrategyManager
+        if (
+            self.store is None
+            or not hasattr(self.store, "_db")
+            or self.store._db is None
+        ):
+            logger.warning("Paper trading skipped -- Store not available")
+            return
+
+        if self.strategy_manager is None:
+            logger.warning("Paper trading skipped -- StrategyManager not available")
+            return
+
+        db = self.store._db
+
+        # 1. Build PaperTradingConfig from global config
+        try:
+            from src.paper.models import PaperTradingConfig
+            paper_config = PaperTradingConfig(
+                starting_capital=config.paper_starting_capital,
+                spx_multiplier=config.paper_spx_multiplier,
+                fee_per_contract=config.paper_fee_per_contract,
+                slippage_pct=config.paper_slippage_pct,
+                max_order_age_ticks=config.paper_max_order_age_ticks,
+            )
+        except Exception as exc:
+            logger.error("PaperTradingConfig creation failed: %s", exc)
+            return
+
+        # Validate config
+        if paper_config.starting_capital <= 0:
+            logger.error("PAPER_STARTING_CAPITAL must be positive, got %.2f", paper_config.starting_capital)
+            return
+        if paper_config.spx_multiplier <= 0:
+            logger.error("SPX multiplier must be positive")
+            return
+
+        # 2. Create PaperTradingEngine
+        try:
+            from src.paper.engine import PaperTradingEngine
+            self.paper_engine = PaperTradingEngine(
+                db=db,
+                strategy_manager=self.strategy_manager,
+                config=paper_config,
+            )
+            await self.paper_engine.init_tables()
+            logger.info(
+                "PaperTradingEngine initialized (capital=$%.0f, fee=$%.2f/contract)",
+                paper_config.starting_capital,
+                paper_config.fee_per_contract,
+            )
+        except ImportError:
+            logger.warning("PaperTradingEngine module not available")
+        except Exception as exc:
+            logger.error("PaperTradingEngine initialization failed: %s", exc)
+            self.paper_engine = None
+
+        # 3. Wire signal logger to engine (for Bayesian calibration)
+        if self.paper_engine is not None and self.signal_logger is not None:
+            self.paper_engine._signal_logger = self.signal_logger
+
+        # 4. Create PortfolioAnalyzer (sub-plan 4-5)
+        if self.paper_engine is not None:
+            try:
+                from src.risk.analyzer import PortfolioAnalyzer
+                from src.risk.config import RiskConfig
+                risk_config = RiskConfig(
+                    risk_free_rate=config.risk_free_rate,
+                )
+                self.portfolio_analyzer = PortfolioAnalyzer(config=risk_config)
+                logger.info("PortfolioAnalyzer initialized")
+            except ImportError:
+                logger.warning("PortfolioAnalyzer module not available")
+            except Exception as exc:
+                logger.error("PortfolioAnalyzer initialization failed: %s", exc)
 
     async def _init_ml_components(self) -> None:
         """Initialize Phase 3 ML components with graceful degradation.
@@ -374,6 +478,12 @@ class SpyBot(commands.Bot):
                     logger.info("UnusualWhalesClient closed")
             except Exception as exc:
                 logger.error("Error closing UnusualWhalesClient: %s", exc)
+
+        # Close paper trading engine (release references)
+        if self.paper_engine is not None:
+            logger.info("Paper trading engine shutdown")
+            self.paper_engine = None
+            self.portfolio_analyzer = None
 
         # Clean up old database entries
         if self.store is not None:
