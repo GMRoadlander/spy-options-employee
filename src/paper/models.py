@@ -146,6 +146,15 @@ class PortfolioSummary:
     daily_pnl: float = 0.0
     strategies_active: list[str] = field(default_factory=list)
 
+    # Risk fields (populated when RiskManager is attached)
+    portfolio_delta: float = 0.0
+    portfolio_gamma: float = 0.0
+    portfolio_theta: float = 0.0
+    portfolio_vega: float = 0.0
+    var_95: float = 0.0
+    circuit_breakers_active: list[str] = field(default_factory=list)
+    risk_alerts_count: int = 0
+
 
 @dataclass
 class PaperResults:

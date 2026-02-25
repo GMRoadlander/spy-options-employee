@@ -97,6 +97,9 @@ class PaperTradingEngine:
             config=config,
         )
 
+        # Risk management (sub-plan 4-5)
+        self.risk_manager: Any = None  # Set externally after init
+
         # Daily state
         self._tick_count_today: int = 0
         self._daily_errors: list[str] = []
@@ -229,6 +232,30 @@ class PaperTradingEngine:
                 logger.error(error_msg, exc_info=True)
                 result.errors.append(error_msg)
 
+            # Step 8: Risk monitoring (if risk manager attached)
+            if self.risk_manager is not None:
+                try:
+                    nav = self._config.starting_capital
+                    # Add cumulative realized PnL to get current NAV
+                    cum_realized = await self.pnl_calculator.get_cumulative_realized_pnl()
+                    nav += cum_realized + result.total_unrealized_pnl
+
+                    open_pos = await self.position_tracker.get_open_positions()
+                    chain = chains.get("SPX") or chains.get("SPY")
+                    spot = chain.spot_price if chain else 0.0
+
+                    alerts = await self.risk_manager.monitor_portfolio(
+                        positions=open_pos,
+                        spot=spot,
+                        nav=nav,
+                        daily_pnl=result.total_unrealized_pnl,
+                    )
+                    if alerts:
+                        for alert in alerts:
+                            result.errors.append(f"RISK:{alert.level}:{alert.message}")
+                except Exception as e:
+                    logger.error("Risk monitoring error: %s", e, exc_info=True)
+
         except Exception as e:
             error_msg = f"Tick error: {e}"
             logger.error(error_msg, exc_info=True)
@@ -281,7 +308,19 @@ class PaperTradingEngine:
         self._daily_errors.clear()
         self.shadow_manager.reset_daily_state()
         self.exit_monitor.clear_template_cache()
+        if self.risk_manager is not None:
+            self.risk_manager.reset_daily_state()
         logger.info("Paper trading engine: start of day")
+
+    def set_risk_manager(self, risk_manager: Any) -> None:
+        """Attach a RiskManager for pre-trade checks and monitoring.
+
+        Called during bot setup after both engine and risk manager are created.
+
+        Args:
+            risk_manager: RiskManager instance.
+        """
+        self.risk_manager = risk_manager
 
     async def get_portfolio_summary(self) -> PortfolioSummary:
         """Get current portfolio state for Discord display.

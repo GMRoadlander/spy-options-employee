@@ -104,5 +104,13 @@ class Config:
     paper_max_order_age_ticks: int = int(os.getenv("PAPER_MAX_ORDER_AGE", "5"))
     paper_channel_id: int = int(os.getenv("DISCORD_PAPER_TRADING_CHANNEL_ID", "0"))
 
+    # Risk management (Phase 4, sub-plan 4-5)
+    risk_max_portfolio_delta: float = float(os.getenv("RISK_MAX_PORTFOLIO_DELTA", "500"))
+    risk_max_portfolio_gamma: float = float(os.getenv("RISK_MAX_PORTFOLIO_GAMMA", "100"))
+    risk_max_portfolio_vega: float = float(os.getenv("RISK_MAX_PORTFOLIO_VEGA", "15000"))
+    risk_max_daily_loss_pct: float = float(os.getenv("RISK_MAX_DAILY_LOSS_PCT", "0.05"))
+    risk_max_drawdown_pct: float = float(os.getenv("RISK_MAX_DRAWDOWN_PCT", "0.10"))
+    risk_vix_halt_threshold: float = float(os.getenv("RISK_VIX_HALT_THRESHOLD", "35"))
+
 
 config = Config()
