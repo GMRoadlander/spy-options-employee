@@ -1,106 +1,33 @@
 # SPX Day Trader — Roadmap
 
-> Milestone 1.0: From options alert bot to permanent research + paper trading platform
+## Milestones
 
-## Phase 1: MVP Data & Signals (~$18/mo) ✅ COMPLETE
+- SHIPPED **v1.0 MVP** — Phases 1-4 + 2.1 (shipped 2026-02-24)
 
-**Goal**: Swap delayed CBOE data for real-time Tastytrade feed, upgrade AI to Sonnet, add TradingView webhooks and CheddarFlow flow parsing. Zero new analysis logic — just better data in, smarter commentary out.
+## Completed Milestones
 
-**Deliverables**:
-- [x] Tastytrade API integration (dxfeed WebSocket streaming, replaces CBOE CDN + Tradier)
-- [x] Claude Sonnet commentary upgrade (replace Haiku)
-- [x] TradingView webhook ingestion (FastAPI endpoint on droplet)
-- [x] CheddarFlow Discord embed parser (listen to `#cheddarflow-raw`, filter SPX flow)
-- [x] All 186 tests passing (130 original + 38 webhook/CheddarFlow + 18 Tastytrade)
+- [v1.0 SPX Day Trader MVP](milestones/v1.0-ROADMAP.md) (Phases 1-4 + 2.1) — SHIPPED 2026-02-24
 
-**Estimated cost**: ~$18/mo (droplet $12 + Sonnet ~$6)
+<details>
+<summary>v1.0 MVP (Phases 1-4 + 2.1) — SHIPPED 2026-02-24</summary>
 
----
+- [x] Phase 1: MVP Data & Signals (2/2 plans) — completed 2026-02-21
+- [x] Phase 2: Strategy Research Engine (3/3 plans) — completed 2026-02-22
+- [x] Phase 2.1: Code Review Fixes (1/1 plans) — completed 2026-02-22
+- [x] Phase 3: ML Intelligence Layer (9/9 plans) — completed 2026-02-23
+- [x] Phase 4: Paper Trading & Validation (8/8 plans) — completed 2026-02-25
 
-## Phase 2: Strategy Research Engine (~$150/mo) ✅ COMPLETE
+</details>
 
-**Goal**: Build the core strategy research loop. Borey defines strategies in plain English or YAML, the system backtests them against 18+ years of history, evaluates with a rigorous anti-overfitting pipeline, and reports results. This is where the bot's identity shifts from "alerting tool" to "trading research assistant."
+## Progress
 
-**Deliverables**:
-- [x] ORATS historical data integration ($99/mo) — EOD option chains back to 2007
-- [x] Optopsy + custom Python backtesting engine for SPX options strategies
-- [x] YAML-based strategy template system (Borey defines strategies, no code)
-- [x] Natural language → structured strategy definition (Claude parses Borey's descriptions into YAML/JSON)
-- [x] Strategy lifecycle state machine (IDEA → DEFINED → BACKTEST → PAPER → RETIRED)
-- [x] Anti-overfitting evaluation pipeline:
-  - Walk-Forward Analysis (12-month IS / 3-month OOS)
-  - Combinatorial Purged Cross-Validation (CPCV, PBO < 0.50 gate)
-  - Deflated Sharpe Ratio (DSR, p < 0.05 gate)
-  - Monte Carlo simulation (1,000 runs, 5th-percentile Sharpe gate)
-- [x] Signal logging — start tracking all alert outcomes now to build feedback dataset
-- [x] Strategy evaluation metrics: Sharpe, Sortino, Calmar, max drawdown, win rate, expectancy, profit factor, regime-conditional analysis
-- [x] Trade journal via Discord (daily summaries, weekly reviews, Borey rates and reviews)
-- [x] Hypothesis testing framework (propose → formalize → test → prove/disprove)
-- [x] Scale droplet to s-2vcpu-4gb ($24/mo)
-
-**Research needed**: 🔬 ORATS API data format and rate limits, Optopsy integration with custom data, CPCV implementation via `skfolio` or `mlfinlab`, strategy template schema design
-
-**Estimated cost**: ~$150/mo (ORATS $99 + droplet $24 + Sonnet ~$25)
-
----
-
-## Phase 2.1: Code Review Fixes ✅ COMPLETE
-
-**Goal**: Fix 7 critical and 15 warning issues found in Phase 2-3 (Discord Research Interface) code review. Security hardening, deprecated API replacement, error handling, type safety, and test coverage.
-
-**Deliverables**:
-- [x] `.gitignore`, matplotlib backend ordering, FK enforcement, style deduplication
-- [x] Lifecycle `update_template()`, background task error handlers, sanitized exceptions, off-by-one fix, `_get_db()` helper
-- [x] `datetime.utcnow()` -> `datetime.now(timezone.utc)` (23 replacements), timezone consistency
-- [x] Color IndexError fix for >4 strategies, cooldowns, auth checks, AI client hardening (timeout, retry, reuse)
-- [x] XML delimiters for prompts, typed PipelineResult, N+1 query fix, longer UUIDs
-- [x] 7 new functional cog tests (457 total)
-
----
-
-## Phase 3: ML Intelligence Layer (~$400/mo) ✅ COMPLETE
-
-**Goal**: Add ML models that make the research engine smarter. Regime detection prevents wrong-strategy-in-wrong-market. Volatility forecasting improves entry timing. Anomaly detection catches institutional flow. Sentiment adds context signals.
-
-**Deliverables**:
-- [x] HMM regime detection (2-3 state: risk-on/risk-off/crisis) via `hmmlearn` — prevents catastrophic strategy-regime mismatches
-- [x] LSTM volatility forecasting — predict IV changes for better entry timing, upgrade path to DeepAR for probabilistic forecasts
-- [x] FinBERT sentiment analysis — free, CPU-only, use as regime context signal (not standalone predictor)
-- [x] Statistical anomaly detection (z-scores on volume/OI, isolation forest on options flow features)
-- [x] Feature store pipeline: IV rank, skew, term structure, GEX, P/C ratio, regime state, sentiment score, vol forecast → SQLite/Parquet
-- [x] Unusual Whales Pro API ($99/mo) — flow + dark pool data
-- [x] Polygon.io real-time OPRA feed ($199/mo) — tick-level options trades/quotes
-- [x] Structured Claude reasoning engine (replaces multi-agent SDK per research — single call gives 80% of value)
-- [x] Continuous learning — track which alerts/strategies worked, update confidence scores with Bayesian calibration
-- [x] Discord ML cog with 6 slash commands + daily ML pipeline scheduling
-- [x] Scale droplet to s-2vcpu-8gb ($48/mo)
-- [x] 887 tests passing (430 new across 9 plans)
-
-**Research needed**: 🔬 HMM state count tuning (2 vs 3 vs 4), LSTM feature selection (VIX + macro variables), FinBERT deployment on droplet CPU, Agent SDK sub-agent patterns, Polygon.io WebSocket integration
-
-**Estimated cost**: ~$400/mo (Unusual Whales $99 + Polygon $199 + droplet $48 + AI ~$50)
-
----
-
-## Phase 4: Paper Trading & Validation (~$400/mo) ✅ COMPLETE — FINAL PHASE
-
-**Goal**: Validate strategies with realistic paper trading simulation. Shadow mode generates signals. Paper trading engine simulates realistic fills with slippage. Strategies prove themselves with real market data. This is the final phase — the system is a permanent research + paper trading platform.
-
-**Deliverables**:
-- [x] Phase 3 bug fixes (prerequisite cleanup)
-- [x] Paper trading engine core with realistic fill simulation
-- [x] Slippage model (dynamic spread, configurable per strategy type)
-- [x] Shadow mode & exit monitor
-- [x] Paper portfolio analytics — Greeks aggregation, VaR, stress testing, position sizing, risk limits, circuit breakers
-- [x] Discord paper trading cog — 6 slash commands, paginated history, close confirmation, charts, daily auto-post
-- [x] Discord performance reporting — daily summaries, weekly reviews, monthly deep reports, equity curves, strategy comparison
-- [x] Integration, wiring & E2E tests — bot.py wiring, scheduler hooks, signal logging, 55 E2E tests, 1466 total tests passing
-
-**Research needed**: 🔬 Realistic SPX slippage modeling (bid-ask width by strike/DTE), portfolio correlation computation
-
-**Estimated cost**: ~$400/mo (data sources carry forward + AI ~$50)
-
----
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|---------------|--------|-----------|
+| 1. MVP Data & Signals | v1.0 | 2/2 | Complete | 2026-02-21 |
+| 2. Strategy Research Engine | v1.0 | 3/3 | Complete | 2026-02-22 |
+| 2.1. Code Review Fixes | v1.0 | 1/1 | Complete | 2026-02-22 |
+| 3. ML Intelligence Layer | v1.0 | 9/9 | Complete | 2026-02-23 |
+| 4. Paper Trading & Validation | v1.0 | 8/8 | Complete | 2026-02-25 |
 
 ## Borey's Daily Workflow (Target State)
 
@@ -117,9 +44,7 @@
 
 **Total daily**: ~5 minutes. All via Discord — never touches code.
 
----
-
-## Key Constraints (from Research)
+## Key Constraints
 
 - **LLMs in research/signal layer, NOT execution path** — latency makes LLM-in-the-loop execution impossible for intraday
 - **Anti-overfitting pipeline is NON-NEGOTIABLE** — 90%+ of backtested strategies fail in production; WFA + CPCV + DSR + Monte Carlo is the minimum
@@ -132,13 +57,14 @@
 
 | Phase | Monthly Cost | Key Adds |
 |-------|-------------|----------|
-| Phase 1 (MVP) ✅ | ~$18 | Tastytrade (free), Sonnet (~$6), DO droplet ($12) |
-| Phase 2 (Research) ✅ | ~$150 | +ORATS ($99), scale droplet ($24), +Sonnet ($25) |
-| Phase 3 (ML) ✅ | ~$400 | +Polygon ($199), +Unusual Whales ($99), scale droplet ($48), +AI ($50) |
-| Phase 4 (Paper) — FINAL | ~$400 | +AI ($50) |
+| Phase 1 (MVP) | ~$18 | Tastytrade (free), Sonnet (~$6), DO droplet ($12) |
+| Phase 2 (Research) | ~$150 | +ORATS ($99), scale droplet ($24), +Sonnet ($25) |
+| Phase 3 (ML) | ~$400 | +Polygon ($199), +Unusual Whales ($99), scale droplet ($48), +AI ($50) |
+| Phase 4 (Paper) — Steady State | ~$400 | +AI ($50) |
 
 ---
 
 *Roadmap created: 2026-02-21*
 *Restructured: 2026-02-21 — identity shift from alert bot to trading research platform*
 *Restructured: 2026-02-23 — removed Phase 5 (autonomous trading), system is permanent research + paper trading platform*
+*v1.0 archived: 2026-02-24 — milestone complete, archived to milestones/v1.0-ROADMAP.md*

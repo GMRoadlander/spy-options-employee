@@ -1,11 +1,18 @@
 # Project State
 
+## Project Reference
+
+See: .planning/PROJECT.md (updated 2026-02-24)
+
+**Core value:** Rigorous strategy validation that prevents overfitting
+**Current focus:** v1.0 shipped — planning next milestone
+
 ## Current
 
-- **Milestone**: 1.0
-- **Phase**: 4 (Paper Trading & Validation) -- COMPLETE
-- **Status**: Milestone 1.0 complete. All 4 phases + Phase 2.1 done. 1466 tests passing.
-- **Last updated**: 2026-02-25
+- **Milestone**: 1.0 — SHIPPED 2026-02-24
+- **Phase**: All complete (5 phases, 23 plans)
+- **Status**: v1.0 milestone archived. Ready for next milestone planning.
+- **Last updated**: 2026-02-24
 
 ## Phase Progress
 
@@ -56,3 +63,4 @@
 | 2026-02-25 | plan_04-08_complete | Integration, wiring & E2E tests: bot.py wiring, scheduler hooks, signal logging, .env.example, 55 E2E integration tests. 1466 tests passing (+55 new). 5 commits. |
 | 2026-02-25 | phase_4_complete | Paper Trading & Validation phase done. All 8 plans executed. 1466 tests passing (+579 from phase start). |
 | 2026-02-25 | milestone_1.0_complete | All 4 phases + Phase 2.1 complete. 1466 tests across 23 plans. System is fully operational research + paper trading platform. |
+| 2026-02-24 | milestone_1.0_shipped | v1.0 archived to milestones/v1.0-ROADMAP.md. MILESTONES.md created. PROJECT.md evolved. ROADMAP.md collapsed. Git tagged v1.0. |
