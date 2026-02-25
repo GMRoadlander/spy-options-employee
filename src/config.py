@@ -104,6 +104,10 @@ class Config:
     paper_max_order_age_ticks: int = int(os.getenv("PAPER_MAX_ORDER_AGE", "5"))
     paper_channel_id: int = int(os.getenv("DISCORD_PAPER_TRADING_CHANNEL_ID", "0"))
 
+    # Paper trading auto-post time (16:15 ET -- between post-market and journal)
+    paper_daily_post_hour: int = 16
+    paper_daily_post_minute: int = 15
+
     # Risk management (Phase 4, sub-plan 4-5)
     risk_max_portfolio_delta: float = float(os.getenv("RISK_MAX_PORTFOLIO_DELTA", "500"))
     risk_max_portfolio_gamma: float = float(os.getenv("RISK_MAX_PORTFOLIO_GAMMA", "100"))

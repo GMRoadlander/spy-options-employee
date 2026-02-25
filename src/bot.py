@@ -144,6 +144,7 @@ class SpyBot(commands.Bot):
             "src.discord_bot.cog_strategy",
             "src.discord_bot.cog_journal",
             "src.discord_bot.cog_ml",
+            "src.discord_bot.cog_paper",
         ]
 
         for ext in cog_extensions:
