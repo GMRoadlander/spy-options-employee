@@ -1,6 +1,6 @@
 # SPX Day Trader — Roadmap
 
-> Milestone 1.0: From options alert bot to autonomous trading research platform
+> Milestone 1.0: From options alert bot to permanent research + paper trading platform
 
 ## Phase 1: MVP Data & Signals (~$18/mo) ✅ COMPLETE
 
@@ -26,7 +26,7 @@
 - [x] Optopsy + custom Python backtesting engine for SPX options strategies
 - [x] YAML-based strategy template system (Borey defines strategies, no code)
 - [x] Natural language → structured strategy definition (Claude parses Borey's descriptions into YAML/JSON)
-- [x] Strategy lifecycle state machine (IDEA → DEFINED → BACKTEST → PAPER → LIVE → RETIRED)
+- [x] Strategy lifecycle state machine (IDEA → DEFINED → BACKTEST → PAPER → RETIRED)
 - [x] Anti-overfitting evaluation pipeline:
   - Walk-Forward Analysis (12-month IS / 3-month OOS)
   - Combinatorial Purged Cross-Validation (CPCV, PBO < 0.50 gate)
@@ -82,46 +82,23 @@
 
 ---
 
-## Phase 4: Paper Trading & Validation (~$450/mo) — IN PROGRESS (4/10 plans)
+## Phase 4: Paper Trading & Validation (~$400/mo) — IN PROGRESS (5/8 plans) — FINAL PHASE
 
-**Goal**: Before live trading, run everything in simulation. Shadow mode generates signals without executing. Paper trading engine simulates realistic fills with slippage. Strategies must prove themselves with real market data before touching real money.
-
-**Deliverables**:
-- [ ] Shadow alert mode — strategies generate and log signals in `#strategy-shadows`, no fills
-- [ ] Paper trading engine with realistic slippage simulation (mid-price + adverse spread, configurable per strategy type)
-- [ ] Paper vs backtest comparison reporting — track degradation from historical to live
-- [ ] Promotion criteria enforcement: 30+ trades, Sharpe > 1.0, win rate > 55%, max drawdown within limits, Borey approval
-- [ ] Schwab API read-only integration (OAuth2, account awareness, portfolio visibility)
-- [ ] Portfolio-level risk management: correlation limits between strategies, capital allocation (equal risk, Kelly-based, or regime-adaptive), max single-strategy allocation
-- [ ] Borey approval gate — no strategy goes LIVE without explicit Discord confirmation
-- [ ] Strategy performance dashboard (Discord-based: daily summaries, weekly reviews, monthly deep reports)
-
-**Research needed**: 🔬 Schwab OAuth2 approval process, realistic SPX slippage modeling (bid-ask width by strike/DTE), portfolio correlation computation
-
-**Estimated cost**: ~$450/mo (data sources carry forward + AI ~$75)
-
----
-
-## Phase 5: Autonomous Trading (~$600/mo)
-
-**Goal**: Only after Phase 4 proves the system works. Enable autonomous trading with three-layer guardrails. Borey's domain expertise is baked into strategy definitions. The system executes; Borey oversees.
+**Goal**: Validate strategies with realistic paper trading simulation. Shadow mode generates signals. Paper trading engine simulates realistic fills with slippage. Strategies prove themselves with real market data. This is the final phase — the system is a permanent research + paper trading platform.
 
 **Deliverables**:
-- [ ] Schwab API write access (or IBKR as alternative)
-- [ ] Three-layer guardrails:
-  - **Strategy-level**: max contracts, max risk per trade, max daily/weekly loss, consecutive loss pause, delta/vega/gamma limits, time constraints, no-trade event days
-  - **Portfolio-level**: max total capital deployed, min cash reserve, max daily/weekly/monthly portfolio loss, max pairwise correlation, max concentration per expiration
-  - **System-level circuit breakers**: drawdown-triggered (5%→reduce, 10%→close, 15%→halt), VIX-triggered (40→pause, 50→close), SPX gap/move-triggered, data staleness, API error threshold, manual kill switch
-- [ ] Kill switches accessible from Discord mobile (drawdown, volatility, market-triggered, manual)
-- [ ] Volatility-adjusted position sizing (Kelly-VIX hybrid — scale down in high vol, scale up in low vol)
-- [ ] Opus for trade decisions, Sonnet for routine analysis
-- [ ] Borey's entry/exit criteria baked into YAML strategy templates (not code)
-- [ ] Gradual rollout: one strategy at a time, minimum size, scale only after 2 weeks of matching paper performance
-- [ ] Full audit trail — every signal, trade, and AI decision logged
+- [x] Phase 3 bug fixes (prerequisite cleanup)
+- [x] Paper trading engine core with realistic fill simulation
+- [x] Slippage model (dynamic spread, configurable per strategy type)
+- [x] Shadow mode & exit monitor
+- [x] Paper portfolio analytics — Greeks aggregation, VaR, stress testing, position sizing, risk limits, circuit breakers
+- [ ] Discord paper trading cog — interactive paper trading commands
+- [ ] Discord performance reporting — daily summaries, weekly reviews, monthly deep reports, equity curves, strategy comparison
+- [ ] Integration, wiring & E2E tests
 
-**Research needed**: 🔬 Schwab order API (or IBKR TWS API), Kelly-VIX hybrid position sizing calibration, circuit breaker thresholds based on account size
+**Research needed**: 🔬 Realistic SPX slippage modeling (bid-ask width by strike/DTE), portfolio correlation computation
 
-**Estimated cost**: ~$600/mo (data + droplet scale to s-4vcpu-8gb $48 + Opus-heavy AI ~$150)
+**Estimated cost**: ~$400/mo (data sources carry forward + AI ~$50)
 
 ---
 
@@ -136,7 +113,7 @@
 | Monthly deep review + new ideas | Monthly | 20 min |
 | Define new strategy (NL or YAML) | As needed | 5 min |
 | Review backtest results | As needed | 5 min |
-| Kill switch / override | Rare | 10 sec |
+| Review paper trading performance | As needed | 5 min |
 
 **Total daily**: ~5 minutes. All via Discord — never touches code.
 
@@ -149,19 +126,19 @@
 - **HMM regime detection is highest-ROI ML model** — prevents catastrophic strategy-regime mismatches
 - **SPX European/cash-settled** — eliminates early exercise, assignment, pin risk complexity
 - **Strategy templates in YAML** — Borey defines, not a custom DSL
-- **Guardrails > model complexity** — the biggest edge is not blowing up, then selling overpriced vol consistently
+- **Advisory + paper trading permanently** — no live order execution; the system researches and validates, Borey decides
 
 ## Cost Structure
 
 | Phase | Monthly Cost | Key Adds |
 |-------|-------------|----------|
 | Phase 1 (MVP) ✅ | ~$18 | Tastytrade (free), Sonnet (~$6), DO droplet ($12) |
-| Phase 2 (Research) | ~$150 | +ORATS ($99), scale droplet ($24), +Sonnet ($25) |
-| Phase 3 (ML) | ~$400 | +Polygon ($199), +Unusual Whales ($99), scale droplet ($48), +AI ($50) |
-| Phase 4 (Paper) | ~$450 | +Schwab (free), +AI ($75) |
-| Phase 5 (Auto-Trading) | ~$600 | +Opus-heavy ($150), scale droplet ($48) |
+| Phase 2 (Research) ✅ | ~$150 | +ORATS ($99), scale droplet ($24), +Sonnet ($25) |
+| Phase 3 (ML) ✅ | ~$400 | +Polygon ($199), +Unusual Whales ($99), scale droplet ($48), +AI ($50) |
+| Phase 4 (Paper) — FINAL | ~$400 | +AI ($50) |
 
 ---
 
 *Roadmap created: 2026-02-21*
 *Restructured: 2026-02-21 — identity shift from alert bot to trading research platform*
+*Restructured: 2026-02-23 — removed Phase 5 (autonomous trading), system is permanent research + paper trading platform*

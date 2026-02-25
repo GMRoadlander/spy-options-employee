@@ -4,8 +4,8 @@
 
 - **Milestone**: 1.0
 - **Phase**: 4 (Paper Trading & Validation) -- In progress
-- **Status**: 4/10 plans complete. Executing Phase 4.
-- **Last updated**: 2026-02-24
+- **Status**: 5/8 plans complete. Executing Phase 4 (final phase).
+- **Last updated**: 2026-02-25
 
 ## Phase Progress
 
@@ -15,8 +15,7 @@
 | 2 | Strategy Research Engine | complete (3/3 plans) |
 | 2.1 | Code Review Fixes | complete (1/1 plans) |
 | 3 | ML Intelligence Layer | complete (9/9 plans) |
-| 4 | Paper Trading & Validation | in progress (4/10 plans) |
-| 5 | Autonomous Trading | pending |
+| 4 | Paper Trading & Validation | in progress (5/8 plans) — FINAL PHASE |
 
 ## Session Log
 
@@ -50,3 +49,5 @@
 | 2026-02-24 | plan_04-02_complete | Paper trading engine core: 8 dataclasses, 5 DB tables, OrderManager, PositionTracker, PnLCalculator, PaperTradingEngine orchestrator, config values. 1016 tests passing (+116 new). 8 commits. |
 | 2026-02-24 | plan_04-03_complete | Slippage model: DynamicSpreadSlippage (7 factors), FixedSlippage, pluggable FillSimulator, slippage_log table. 1054 tests passing (+38 new). 4 commits. |
 | 2026-02-24 | plan_04-04_complete | Shadow mode + exit monitor: ShadowModeManager (auto paper trade generation), ExitMonitor (5 exit conditions, AM/PM settlement), engine+scheduler wiring. 1110 tests passing (+56 new). 5 commits. |
+| 2026-02-23 | roadmap_restructured | Removed Phase 5 (Autonomous Trading). System is now a permanent research + paper trading platform. No live trading ever. Phase 4 simplified from 10 to 8 plans: removed Promotion Workflow (4-6) and Schwab API (4-7). Renumbered remaining plans. Strategy lifecycle: IDEA → DEFINED → BACKTEST → PAPER → RETIRED (no LIVE). |
+| 2026-02-25 | plan_04-05_complete | Paper portfolio analytics: RiskConfig, PortfolioAnalyzer (Greeks/VaR/concentration/correlation), StressTestEngine (18 scenarios), position sizing (Kelly), RiskManager (pre-trade + circuit breakers), DB schema, engine wiring. 1238 tests passing (+128 new). 8 commits. |
