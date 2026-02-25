@@ -508,6 +508,257 @@ def draw_strategy_comparison(
         return None
 
 
+# -- Paper trading charts (Phase 4, sub-plan 4-6) -----------------------------
+
+
+def create_pnl_curve_chart(
+    equity_data: list[dict],
+    strategy_name: str | None = None,
+) -> discord.File | None:
+    """Create a P/L equity curve chart for paper trading.
+
+    Shows cumulative P/L as a line chart with green/red fill for above/below
+    zero, suitable for mobile Discord viewing.
+
+    Args:
+        equity_data: From PnLCalculator.get_equity_curve() -- list of dicts
+            with ``date``, ``total_equity``, ``daily_pnl``.
+        strategy_name: Optional, for title customization.
+
+    Returns:
+        discord.File with filename ``pnl_curve_{timestamp}.png``, or None.
+    """
+    if not equity_data or len(equity_data) < 2:
+        return None
+
+    try:
+        import matplotlib.dates as mdates
+
+        # Extract data
+        starting_capital = equity_data[0].get("total_equity", 0)
+        dates = []
+        pnl_values = []
+        for d in equity_data:
+            date_str = d.get("date", "")
+            if isinstance(date_str, str) and len(date_str) >= 10:
+                try:
+                    dates.append(datetime.strptime(date_str[:10], "%Y-%m-%d"))
+                except ValueError:
+                    continue
+            elif hasattr(date_str, "isoformat"):
+                dates.append(date_str)
+            else:
+                continue
+            pnl_values.append(d.get("total_equity", 0) - starting_capital)
+
+        if len(dates) < 2:
+            return None
+
+        pnl_arr = np.array(pnl_values)
+
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        # Plot line
+        ax.plot(dates, pnl_arr, color="#00ff00", linewidth=1.5, label="Cumulative P/L")
+
+        # Green fill above zero, red fill below zero
+        ax.fill_between(
+            dates, pnl_arr, 0,
+            where=pnl_arr >= 0,
+            color="#00ff00", alpha=0.15,
+            interpolate=True,
+        )
+        ax.fill_between(
+            dates, pnl_arr, 0,
+            where=pnl_arr < 0,
+            color="#ff0000", alpha=0.15,
+            interpolate=True,
+        )
+
+        # Zero line
+        ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+
+        # Formatting
+        title = f"{strategy_name} -- Paper P/L Curve" if strategy_name else "Portfolio -- Paper P/L Curve"
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.set_xlabel("Date", fontsize=11)
+        ax.set_ylabel("Cumulative P/L ($)", fontsize=11)
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.grid(alpha=0.2)
+
+        plt.xticks(rotation=45, ha="right", fontsize=8)
+        plt.tight_layout()
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return _save_to_discord_file(fig, f"pnl_curve_{timestamp}.png")
+
+    except Exception as exc:
+        logger.error("Failed to create P/L curve chart: %s", exc, exc_info=True)
+        plt.close("all")
+        return None
+
+
+def create_drawdown_chart(
+    equity_data: list[dict],
+    strategy_name: str | None = None,
+) -> discord.File | None:
+    """Create a drawdown underwater chart for paper trading.
+
+    Shows drawdown percentage from peak equity as a filled area chart.
+
+    Args:
+        equity_data: From PnLCalculator.get_equity_curve() -- list of dicts
+            with ``date``, ``total_equity``.
+        strategy_name: Optional, for title customization.
+
+    Returns:
+        discord.File with filename ``drawdown_{timestamp}.png``, or None.
+    """
+    if not equity_data or len(equity_data) < 2:
+        return None
+
+    try:
+        import matplotlib.dates as mdates
+
+        dates = []
+        equity_values = []
+        for d in equity_data:
+            date_str = d.get("date", "")
+            if isinstance(date_str, str) and len(date_str) >= 10:
+                try:
+                    dates.append(datetime.strptime(date_str[:10], "%Y-%m-%d"))
+                except ValueError:
+                    continue
+            elif hasattr(date_str, "isoformat"):
+                dates.append(date_str)
+            else:
+                continue
+            equity_values.append(d.get("total_equity", 0))
+
+        if len(dates) < 2:
+            return None
+
+        equity_arr = np.array(equity_values)
+        running_max = np.maximum.accumulate(equity_arr)
+        drawdown_pct = np.where(
+            running_max > 0,
+            (equity_arr - running_max) / running_max,
+            0.0,
+        )
+
+        fig, ax = plt.subplots(figsize=(12, 3))
+
+        # Red fill from 0 to drawdown
+        ax.fill_between(dates, drawdown_pct, 0, color="#ff0000", alpha=0.4)
+        ax.plot(dates, drawdown_pct, color="#ff0000", linewidth=1)
+
+        # Annotate max drawdown point
+        min_idx = np.argmin(drawdown_pct)
+        if drawdown_pct[min_idx] < 0:
+            ax.annotate(
+                f"{drawdown_pct[min_idx]:.2%}",
+                xy=(dates[min_idx], drawdown_pct[min_idx]),
+                xytext=(dates[min_idx], drawdown_pct[min_idx] * 0.5),
+                arrowprops=dict(arrowstyle="->", color="white"),
+                color="white",
+                fontsize=9,
+                fontweight="bold",
+            )
+
+        # Formatting
+        title = f"{strategy_name} -- Drawdown" if strategy_name else "Portfolio -- Drawdown"
+        ax.set_title(title, fontsize=14, fontweight="bold")
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.yaxis.set_major_formatter(mticker.PercentFormatter(1.0))
+        ax.grid(alpha=0.2)
+
+        plt.xticks(rotation=45, ha="right", fontsize=8)
+        plt.tight_layout()
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return _save_to_discord_file(fig, f"drawdown_{timestamp}.png")
+
+    except Exception as exc:
+        logger.error("Failed to create drawdown chart: %s", exc, exc_info=True)
+        plt.close("all")
+        return None
+
+
+def create_daily_pnl_bar_chart(
+    equity_data: list[dict],
+    days: int = 30,
+) -> discord.File | None:
+    """Create a daily P/L bar chart for paper trading.
+
+    Shows daily P/L as green/red bars for the last N days.
+
+    Args:
+        equity_data: From PnLCalculator.get_equity_curve() -- list of dicts
+            with ``date``, ``daily_pnl``.
+        days: Number of days to display.
+
+    Returns:
+        discord.File with filename ``daily_pnl_{timestamp}.png``, or None.
+    """
+    if not equity_data:
+        return None
+
+    try:
+        import matplotlib.dates as mdates
+
+        # Use last N days
+        data = equity_data[-days:]
+
+        dates = []
+        daily_pnls = []
+        for d in data:
+            date_str = d.get("date", "")
+            if isinstance(date_str, str) and len(date_str) >= 10:
+                try:
+                    dates.append(datetime.strptime(date_str[:10], "%Y-%m-%d"))
+                except ValueError:
+                    continue
+            elif hasattr(date_str, "isoformat"):
+                dates.append(date_str)
+            else:
+                continue
+            daily_pnls.append(d.get("daily_pnl", 0))
+
+        if not dates:
+            return None
+
+        pnl_arr = np.array(daily_pnls)
+        colors = ["#00ff00" if p >= 0 else "#ff0000" for p in pnl_arr]
+
+        fig, ax = plt.subplots(figsize=(12, 5))
+
+        ax.bar(dates, pnl_arr, color=colors, alpha=0.8, width=0.8)
+
+        # Zero line
+        ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8, alpha=0.6)
+
+        # Formatting
+        ax.set_title(f"Daily P/L -- Last {days} Days", fontsize=14, fontweight="bold")
+        ax.set_xlabel("Date", fontsize=11)
+        ax.set_ylabel("Daily P/L ($)", fontsize=11)
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.grid(alpha=0.2)
+
+        plt.xticks(rotation=45, ha="right", fontsize=8)
+        plt.tight_layout()
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        return _save_to_discord_file(fig, f"daily_pnl_{timestamp}.png")
+
+    except Exception as exc:
+        logger.error("Failed to create daily P/L bar chart: %s", exc, exc_info=True)
+        plt.close("all")
+        return None
+
+
 # -- ML Intelligence Layer charts (Phase 3) ------------------------------------
 
 # Regime state colors for the timeline chart
