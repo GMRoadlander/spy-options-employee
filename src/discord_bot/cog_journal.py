@@ -9,11 +9,13 @@ Implements slash commands:
 Background tasks:
     - Auto-post daily summary at 4:30 PM ET
     - Auto-post weekly review Monday 10 AM ET
+    - Auto-post monthly report on 1st of month at 10 AM ET
+    - Auto-post paper trading daily summary at 4:15 PM ET
 """
 
 import logging
-from datetime import datetime, time, timedelta
-from typing import Optional
+from datetime import datetime, time, timedelta, timezone
+from typing import Any, Optional
 
 import discord
 from discord import app_commands
@@ -47,12 +49,16 @@ class JournalCog(commands.Cog, name="Journal"):
         """Start background tasks when the cog is loaded."""
         self.auto_daily_summary.start()
         self.auto_weekly_review.start()
+        self.auto_monthly_report.start()
+        self.auto_paper_daily.start()
         logger.info("Journal background tasks started")
 
     async def cog_unload(self) -> None:
         """Stop background tasks when the cog is unloaded."""
         self.auto_daily_summary.cancel()
         self.auto_weekly_review.cancel()
+        self.auto_monthly_report.cancel()
+        self.auto_paper_daily.cancel()
         logger.info("Journal background tasks stopped")
 
     def _get_journal_channel(self) -> discord.TextChannel | None:
@@ -71,6 +77,48 @@ class JournalCog(commands.Cog, name="Journal"):
             return None
         return channel
 
+    def _get_paper_channel(self) -> discord.TextChannel | None:
+        """Get the paper trading channel from config."""
+        channel_id = getattr(config, "paper_trading_channel_id", 0)
+        if channel_id == 0:
+            channel_id = getattr(config, "paper_channel_id", 0)
+        if channel_id == 0:
+            return None
+        channel = self.bot.get_channel(channel_id)
+        if channel is None or not isinstance(channel, discord.TextChannel):
+            logger.warning("Paper trading channel %d not found", channel_id)
+            return None
+        return channel
+
+    # -- Helper methods for reporters ----------------------------------------
+
+    def _get_paper_reporter(self) -> Any:
+        """Get PaperPerformanceReporter if paper engine is available.
+
+        Returns:
+            PaperPerformanceReporter instance or None.
+        """
+        paper_engine = getattr(self.bot, "paper_engine", None)
+        strategy_manager = getattr(self.bot, "strategy_manager", None)
+        store = getattr(self.bot, "store", None)
+        if paper_engine is None or strategy_manager is None or store is None:
+            return None
+        from src.discord_bot.paper_reporting import PaperPerformanceReporter
+        return PaperPerformanceReporter(paper_engine, strategy_manager, store)
+
+    def _get_strategy_reporter(self) -> Any:
+        """Get StrategyReporter if store and strategy_manager are available.
+
+        Returns:
+            StrategyReporter instance or None.
+        """
+        store = getattr(self.bot, "store", None)
+        manager = getattr(self.bot, "strategy_manager", None)
+        if store is None or manager is None:
+            return None
+        from src.discord_bot.reporting import StrategyReporter
+        return StrategyReporter(store, manager)
+
     # -- /journal daily --------------------------------------------------
 
     @app_commands.command(
@@ -81,11 +129,14 @@ class JournalCog(commands.Cog, name="Journal"):
         """Generate and post daily summary."""
         await interaction.response.defer()
 
-        embed = await self._build_daily_embed()
-        await interaction.followup.send(embed=embed)
+        embeds, files = await self._build_daily_embed()
+        if files:
+            await interaction.followup.send(embeds=embeds, files=files)
+        else:
+            await interaction.followup.send(embeds=embeds)
 
         # Save to journal entries
-        await self._save_journal_entry("daily", self._embed_to_text(embed))
+        await self._save_journal_entry("daily", self._embed_to_text(embeds[0]))
 
     # -- /journal weekly -------------------------------------------------
 
@@ -97,10 +148,13 @@ class JournalCog(commands.Cog, name="Journal"):
         """Generate and post weekly review."""
         await interaction.response.defer()
 
-        embed = await self._build_weekly_embed()
-        await interaction.followup.send(embed=embed)
+        embeds, files = await self._build_weekly_embed()
+        if files:
+            await interaction.followup.send(embeds=embeds, files=files)
+        else:
+            await interaction.followup.send(embeds=embeds)
 
-        await self._save_journal_entry("weekly", self._embed_to_text(embed))
+        await self._save_journal_entry("weekly", self._embed_to_text(embeds[0]))
 
     # -- /journal rate ---------------------------------------------------
 
@@ -137,7 +191,7 @@ class JournalCog(commands.Cog, name="Journal"):
             return
 
         db = store._ensure_connected()
-        now = datetime.now().isoformat()
+        now = _now_et().isoformat()
 
         await db.execute(
             """
@@ -176,7 +230,7 @@ class JournalCog(commands.Cog, name="Journal"):
             title="Journal Note Saved",
             description=content,
             color=0x0099FF,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         embed.set_footer(text=f"By {interaction.user} | SPY Options Employee")
         await interaction.followup.send(embed=embed)
@@ -195,13 +249,24 @@ class JournalCog(commands.Cog, name="Journal"):
         if channel is None:
             return
 
-        embed = await self._build_daily_embed()
+        embeds, files = await self._build_daily_embed()
         try:
-            await channel.send(embed=embed)
-            await self._save_journal_entry("daily", self._embed_to_text(embed))
-            logger.info("Auto daily summary posted")
+            if files:
+                await channel.send(embeds=embeds, files=files)
+            else:
+                await channel.send(embeds=embeds)
+            await self._save_journal_entry("daily", self._embed_to_text(embeds[0]))
+            logger.info(
+                "Auto daily summary posted (%d embeds, %d files)",
+                len(embeds), len(files),
+            )
         except discord.HTTPException as exc:
             logger.error("Failed to post daily summary: %s", exc)
+
+    @auto_daily_summary.error
+    async def on_daily_summary_error(self, error: Exception) -> None:
+        """Log errors from the daily summary background task."""
+        logger.error("Daily summary task error: %s", error, exc_info=error)
 
     @auto_daily_summary.before_loop
     async def before_daily_summary(self) -> None:
@@ -220,25 +285,155 @@ class JournalCog(commands.Cog, name="Journal"):
         if channel is None:
             return
 
-        embed = await self._build_weekly_embed()
+        embeds, files = await self._build_weekly_embed()
         try:
-            await channel.send(embed=embed)
-            await self._save_journal_entry("weekly", self._embed_to_text(embed))
-            logger.info("Auto weekly review posted")
+            if files:
+                await channel.send(embeds=embeds, files=files)
+            else:
+                await channel.send(embeds=embeds)
+            await self._save_journal_entry("weekly", self._embed_to_text(embeds[0]))
+            logger.info(
+                "Auto weekly review posted (%d embeds, %d files)",
+                len(embeds), len(files),
+            )
         except discord.HTTPException as exc:
             logger.error("Failed to post weekly review: %s", exc)
+
+    @auto_weekly_review.error
+    async def on_weekly_review_error(self, error: Exception) -> None:
+        """Log errors from the weekly review background task."""
+        logger.error("Weekly review task error: %s", error, exc_info=error)
 
     @auto_weekly_review.before_loop
     async def before_weekly_review(self) -> None:
         """Wait for bot to be ready."""
         await self.bot.wait_until_ready()
 
+    @tasks.loop(time=time(10, 0, tzinfo=ET))
+    async def auto_monthly_report(self) -> None:
+        """Auto-post monthly deep report on the 1st of each month at 10 AM ET."""
+        now = _now_et()
+        # Only run on 1st of month, weekdays
+        if now.day != 1 or now.weekday() >= 5:
+            return
+
+        channel = self._get_journal_channel()
+        if channel is None:
+            return
+
+        # Report on previous month
+        prev_month = now.replace(day=1) - timedelta(days=1)
+
+        paper_reporter = self._get_paper_reporter()
+        strategy_reporter = self._get_strategy_reporter()
+
+        embeds: list[discord.Embed] = []
+        files: list[discord.File] = []
+
+        # Existing monthly report (backtest-based)
+        if strategy_reporter is not None:
+            try:
+                bt_embeds = await strategy_reporter.monthly_report(prev_month.date())
+                embeds.extend(bt_embeds)
+            except Exception as exc:
+                logger.error("Failed to build monthly backtest report: %s", exc)
+
+        # Paper trading monthly report
+        if paper_reporter is not None:
+            try:
+                paper_embeds, paper_files = await paper_reporter.monthly_report(
+                    month=prev_month.date(),
+                )
+                embeds.extend(paper_embeds)
+                files.extend(paper_files)
+            except Exception as exc:
+                logger.error("Failed to build paper monthly report: %s", exc)
+
+        if embeds:
+            try:
+                # Discord max 10 embeds per message -- split if needed
+                for i in range(0, len(embeds), 10):
+                    batch_embeds = embeds[i:i + 10]
+                    batch_files = files if i == 0 else []  # attach files to first message only
+                    if batch_files:
+                        await channel.send(embeds=batch_embeds, files=batch_files)
+                    else:
+                        await channel.send(embeds=batch_embeds)
+                await self._save_journal_entry(
+                    "monthly",
+                    f"Monthly report for {prev_month.strftime('%B %Y')}",
+                )
+                logger.info("Auto monthly report posted")
+            except discord.HTTPException as exc:
+                logger.error("Failed to post monthly report: %s", exc)
+
+    @auto_monthly_report.before_loop
+    async def before_monthly_report(self) -> None:
+        """Wait for bot to be ready."""
+        await self.bot.wait_until_ready()
+
+    @auto_monthly_report.error
+    async def on_monthly_report_error(self, error: Exception) -> None:
+        """Log errors from the monthly report background task."""
+        logger.error("Monthly report task error: %s", error, exc_info=error)
+
+    @tasks.loop(time=time(16, 15, tzinfo=ET))
+    async def auto_paper_daily(self) -> None:
+        """Auto-post paper trading daily summary to #paper-trading at 16:15 ET."""
+        now = _now_et()
+        if now.weekday() >= 5:
+            return
+
+        channel = self._get_paper_channel()
+        if channel is None:
+            return
+
+        paper_reporter = self._get_paper_reporter()
+        if paper_reporter is None:
+            return
+
+        try:
+            embeds, files = await paper_reporter.daily_report()
+            if not embeds:
+                return
+
+            # Also run degradation check
+            alerts = await paper_reporter.check_degradation()
+            embeds.extend(alerts)
+
+            if files:
+                await channel.send(embeds=embeds, files=files)
+            else:
+                await channel.send(embeds=embeds)
+
+            logger.info(
+                "Paper daily summary posted to #paper-trading (%d embeds)",
+                len(embeds),
+            )
+        except discord.HTTPException as exc:
+            logger.error("Failed to post paper daily summary: %s", exc)
+        except Exception as exc:
+            logger.error("Paper daily report error: %s", exc, exc_info=True)
+
+    @auto_paper_daily.before_loop
+    async def before_paper_daily(self) -> None:
+        """Wait for bot to be ready."""
+        await self.bot.wait_until_ready()
+
+    @auto_paper_daily.error
+    async def on_paper_daily_error(self, error: Exception) -> None:
+        """Log errors from the paper daily background task."""
+        logger.error("Paper daily task error: %s", error, exc_info=error)
+
     # -- Helper methods --------------------------------------------------
 
-    async def _build_daily_embed(self) -> discord.Embed:
-        """Build a daily summary embed from store data.
+    async def _build_daily_embed(
+        self,
+    ) -> tuple[list[discord.Embed], list[discord.File]]:
+        """Build daily summary with paper trading section.
 
-        Aggregates: signals fired, outcomes, strategy alerts, market context.
+        Returns:
+            Tuple of (embeds, chart_files).
         """
         from src.discord_bot.embeds import build_daily_summary_embed
 
@@ -254,15 +449,36 @@ class JournalCog(commands.Cog, name="Journal"):
         # Gather today's ratings
         rating_stats = await self._get_rating_stats_since(start_of_day)
 
-        return build_daily_summary_embed(
+        main_embed = build_daily_summary_embed(
             date=today,
             signal_stats=signal_stats,
             strategy_summary=strategy_summary,
             rating_stats=rating_stats,
         )
 
-    async def _build_weekly_embed(self) -> discord.Embed:
-        """Build a weekly review embed from store data."""
+        embeds = [main_embed]
+        files: list[discord.File] = []
+
+        # Paper trading section
+        paper_reporter = self._get_paper_reporter()
+        if paper_reporter is not None:
+            try:
+                paper_embeds, paper_files = await paper_reporter.daily_report()
+                embeds.extend(paper_embeds)
+                files.extend(paper_files)
+            except Exception as exc:
+                logger.error("Failed to build paper daily report: %s", exc)
+
+        return embeds, files
+
+    async def _build_weekly_embed(
+        self,
+    ) -> tuple[list[discord.Embed], list[discord.File]]:
+        """Build weekly review with paper trading section.
+
+        Returns:
+            Tuple of (embeds, chart_files).
+        """
         from src.discord_bot.embeds import build_weekly_review_embed
 
         now = _now_et()
@@ -278,13 +494,30 @@ class JournalCog(commands.Cog, name="Journal"):
         strategy_summary = await self._get_strategy_summary()
         rating_stats = await self._get_rating_stats_since(start_of_week)
 
-        return build_weekly_review_embed(
+        main_embed = build_weekly_review_embed(
             start_date=start_of_week.date(),
             end_date=end_of_week.date(),
             signal_stats=signal_stats,
             strategy_summary=strategy_summary,
             rating_stats=rating_stats,
         )
+
+        embeds = [main_embed]
+        files: list[discord.File] = []
+
+        # Paper trading section
+        paper_reporter = self._get_paper_reporter()
+        if paper_reporter is not None:
+            try:
+                paper_embeds, paper_files = await paper_reporter.weekly_report(
+                    week_end=end_of_week.date(),
+                )
+                embeds.extend(paper_embeds)
+                files.extend(paper_files)
+            except Exception as exc:
+                logger.error("Failed to build paper weekly report: %s", exc)
+
+        return embeds, files
 
     async def _get_signal_stats_since(self, since: datetime) -> dict:
         """Get signal statistics since a given time."""
@@ -339,7 +572,7 @@ class JournalCog(commands.Cog, name="Journal"):
 
         try:
             db = store._ensure_connected()
-            now = datetime.now().isoformat()
+            now = _now_et().isoformat()
             await db.execute(
                 """
                 INSERT INTO journal_entries (entry_type, content, author, created_at)
