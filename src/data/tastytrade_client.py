@@ -58,12 +58,14 @@ class TastytradeClient:
         client_secret: str,
         refresh_token: str,
         is_sandbox: bool = False,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 15.0,
+        strike_range_pct: float = 0.07,
     ) -> None:
         self._client_secret = client_secret
         self._refresh_token = refresh_token
         self._is_sandbox = is_sandbox
         self._timeout = timeout_seconds
+        self._strike_range_pct = strike_range_pct  # Filter strikes within ±15% of spot
         self._session = None  # Lazy init
 
     async def _get_session(self):
@@ -127,15 +129,30 @@ class TastytradeClient:
             return None
 
         target_expiries = future_expiries[:max_expirations]
-        options = []
+        all_options = []
         for exp in target_expiries:
-            options.extend(chain_map[exp])
+            all_options.extend(chain_map[exp])
+
+        # Estimate spot price from middle strike of nearest expiry
+        nearest_opts = chain_map[target_expiries[0]]
+        strikes = sorted(set(float(o.strike_price) for o in nearest_opts))
+        estimated_spot = strikes[len(strikes) // 2] if strikes else 0.0
+
+        # Filter to strikes within ±strike_range_pct of spot
+        low = estimated_spot * (1 - self._strike_range_pct)
+        high = estimated_spot * (1 + self._strike_range_pct)
+        options = [o for o in all_options if low <= float(o.strike_price) <= high]
 
         logger.info(
-            "Tastytrade: %d contracts across %d expirations for %s",
+            "Tastytrade: %d contracts (filtered from %d) across %d expirations for %s "
+            "(spot~%.0f, range %.0f-%.0f)",
             len(options),
+            len(all_options),
             len(target_expiries),
             ticker_upper,
+            estimated_spot,
+            low,
+            high,
         )
 
         # Step 3: REST market data (bid/ask/last/volume/OI) in batches of 100
@@ -159,38 +176,37 @@ class TastytradeClient:
             len(options),
         )
 
-        # Step 4: WebSocket one-shot for Greeks (best-effort)
+        # Step 4: WebSocket one-shot for Greeks (best-effort, hard timeout)
         streamer_symbols = [opt.streamer_symbol for opt in options]
         greeks_map: dict[str, object] = {}
         quote_map: dict[str, object] = {}
 
         try:
-            async with DXLinkStreamer(session) as streamer:
-                await streamer.subscribe(Greeks, streamer_symbols)
-                await streamer.subscribe(Quote, streamer_symbols)
+            async with asyncio.timeout(self._timeout):
+                async with DXLinkStreamer(session) as streamer:
+                    await streamer.subscribe(Greeks, streamer_symbols)
+                    await streamer.subscribe(Quote, streamer_symbols)
 
-                deadline = asyncio.get_event_loop().time() + self._timeout
-
-                # Collect Greeks
-                async for greek in streamer.listen(Greeks):
-                    greeks_map[greek.event_symbol] = greek
-                    if (
-                        len(greeks_map) >= len(streamer_symbols)
-                        or asyncio.get_event_loop().time() > deadline
-                    ):
-                        break
-
-                # Collect Quotes with remaining time
-                remaining = deadline - asyncio.get_event_loop().time()
-                if remaining > 1.0:
-                    async for quote in streamer.listen(Quote):
-                        quote_map[quote.event_symbol] = quote
-                        if (
-                            len(quote_map) >= len(streamer_symbols)
-                            or asyncio.get_event_loop().time() > deadline
-                        ):
+                    # Collect Greeks (stop early if we have them all)
+                    async for greek in streamer.listen(Greeks):
+                        greeks_map[greek.event_symbol] = greek
+                        if len(greeks_map) >= len(streamer_symbols):
                             break
 
+                    # Collect Quotes
+                    async for quote in streamer.listen(Quote):
+                        quote_map[quote.event_symbol] = quote
+                        if len(quote_map) >= len(streamer_symbols):
+                            break
+
+        except TimeoutError:
+            logger.info(
+                "Tastytrade: streamer timed out after %.0fs (got Greeks=%d, Quotes=%d of %d) — using partial data",
+                self._timeout,
+                len(greeks_map),
+                len(quote_map),
+                len(streamer_symbols),
+            )
         except Exception as exc:
             logger.warning(
                 "Tastytrade: streamer error (continuing with REST data) — %s", exc

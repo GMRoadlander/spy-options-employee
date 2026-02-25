@@ -174,12 +174,7 @@ class SpyBot(commands.Bot):
             except Exception as exc:
                 logger.error("Failed to load extension %s: %s", ext, exc, exc_info=True)
 
-        # Sync slash commands with Discord
-        try:
-            synced = await self.tree.sync()
-            logger.info("Synced %d slash commands", len(synced))
-        except Exception as exc:
-            logger.error("Failed to sync slash commands: %s", exc, exc_info=True)
+        # Slash command sync happens in on_ready() where guilds are available
 
     async def _init_paper_trading(self) -> None:
         """Initialize Phase 4 paper trading components with graceful degradation.
@@ -440,6 +435,15 @@ class SpyBot(commands.Bot):
         logger.info("Bot is ready!")
         logger.info("Logged in as %s (ID: %s)", self.user, self.user.id if self.user else "unknown")
         logger.info("Connected to %d guild(s)", len(self.guilds))
+
+        # Sync slash commands per guild (instant, no 1-hour wait)
+        try:
+            for guild in self.guilds:
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logger.info("Synced %d slash commands to guild %s (%s)", len(synced), guild.name, guild.id)
+        except Exception as exc:
+            logger.error("Failed to sync slash commands: %s", exc, exc_info=True)
 
         # Set presence
         activity = discord.Activity(
