@@ -108,6 +108,21 @@ class Config:
     paper_daily_post_hour: int = 16
     paper_daily_post_minute: int = 15
 
+    # Paper trading reporting schedule
+    paper_daily_report_hour: int = 16
+    paper_daily_report_minute: int = 15
+    paper_weekly_report_day: int = 4      # 0=Mon, 4=Fri
+    paper_monthly_report_day: int = 1     # 1st of month
+
+    # Degradation thresholds
+    degradation_sharpe_threshold: float = 0.5
+    degradation_win_rate_threshold: float = 0.10
+    degradation_max_dd_ratio: float = 1.5
+    degradation_min_trades_for_check: int = 10
+
+    # Rolling metrics window
+    rolling_metrics_window: int = 20
+
     # Risk management (Phase 4, sub-plan 4-5)
     risk_max_portfolio_delta: float = float(os.getenv("RISK_MAX_PORTFOLIO_DELTA", "500"))
     risk_max_portfolio_gamma: float = float(os.getenv("RISK_MAX_PORTFOLIO_GAMMA", "100"))
