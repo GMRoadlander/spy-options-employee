@@ -817,7 +817,6 @@ def build_strategy_list_embed(
         "defined": "[DEF]",
         "backtest": "[BT]",
         "paper": "[PAPER]",
-        "live": "[LIVE]",
         "retired": "[RET]",
     }
 
@@ -856,7 +855,6 @@ def build_strategy_detail_embed(
         "defined": COLOR_INFO,
         "backtest": COLOR_NEUTRAL,
         "paper": COLOR_NEUTRAL,
-        "live": COLOR_BULLISH,
         "retired": COLOR_BEARISH,
     }
 
@@ -1586,6 +1584,506 @@ def build_reasoning_embed(analysis: dict) -> discord.Embed:
         )
 
     embed.set_footer(text="SPY Options Employee | Reasoning (~$0.01-0.03)")
+    return embed
+
+
+# -- Paper trading embeds (Phase 4, sub-plan 4-6) ----------------------------
+
+
+def _build_option_desc(legs: list[dict]) -> str:
+    """Build a compact option description from position legs for mobile-friendly display.
+
+    Examples:
+        "SPX Mar15 5100/5110 IC" (iron condor)
+        "SPX Mar15 5050/5060 PS" (put spread)
+        "SPX Mar15 5100C" (single call)
+
+    Args:
+        legs: List of leg dicts with keys: option_type, strike, expiry.
+
+    Returns:
+        Compact option description string.
+    """
+    if not legs:
+        return "SPX (no legs)"
+
+    # Extract unique expiry -- use shortest format
+    expiries = set()
+    for leg in legs:
+        exp = leg.get("expiry", "")
+        if isinstance(exp, str) and len(exp) >= 10:
+            try:
+                from datetime import datetime as _dt
+                d = _dt.strptime(exp[:10], "%Y-%m-%d")
+                expiries.add(d.strftime("%b%d"))
+            except (ValueError, TypeError):
+                expiries.add(str(exp)[:5])
+        else:
+            expiries.add(str(exp)[:5])
+
+    expiry_str = sorted(expiries)[0] if expiries else ""
+
+    # Collect all strikes sorted
+    strikes = sorted(set(leg.get("strike", 0) for leg in legs))
+
+    # Determine option types present
+    option_types = set(leg.get("option_type", "").lower() for leg in legs)
+    has_calls = "call" in option_types
+    has_puts = "put" in option_types
+
+    # Single leg
+    if len(legs) == 1:
+        leg = legs[0]
+        side = "C" if leg.get("option_type", "").lower() == "call" else "P"
+        return f"SPX {expiry_str} {int(strikes[0])}{side}"
+
+    # Determine spread type abbreviation
+    if len(legs) == 4 and has_calls and has_puts:
+        spread_type = "IC"
+    elif len(legs) == 3:
+        spread_type = "BF"
+    elif len(legs) == 2 and has_calls and not has_puts:
+        spread_type = "CS"
+    elif len(legs) == 2 and has_puts and not has_calls:
+        spread_type = "PS"
+    elif len(legs) == 2 and has_calls and has_puts:
+        spread_type = "ST"  # strangle/straddle
+    else:
+        spread_type = f"{len(legs)}L"
+
+    strike_str = "/".join(str(int(s)) for s in strikes)
+    return f"SPX {expiry_str} {strike_str} {spread_type}"
+
+
+def build_paper_status_embed(
+    portfolio: "PortfolioSummary",
+    positions: list[dict],
+    todays_fills: list[dict],
+) -> discord.Embed:
+    """Build a paper trading status embed for /paper_status.
+
+    Args:
+        portfolio: PortfolioSummary dataclass from src.paper.models.
+        positions: List of open position dicts from PositionTracker.
+        todays_fills: List of fill dicts from today's orders.
+
+    Returns:
+        Discord Embed with portfolio overview.
+    """
+    import json as _json
+
+    daily_pnl = portfolio.daily_pnl
+    total_pnl = portfolio.realized_pnl + portfolio.unrealized_pnl
+
+    if daily_pnl > 0:
+        color = COLOR_BULLISH
+    elif daily_pnl < 0:
+        color = COLOR_BEARISH
+    else:
+        color = COLOR_NEUTRAL
+
+    embed = discord.Embed(
+        title="Paper Trading Status",
+        description=(
+            f"Portfolio: {_fmt_price(portfolio.total_equity)} | "
+            f"Day P/L: {_fmt_price(daily_pnl)} | "
+            f"Total P/L: {_fmt_price(total_pnl)}"
+        ),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Field 1: Active Positions
+    if positions:
+        pos_lines = []
+        for pos in positions[:10]:
+            strategy_name = pos.get("strategy_name", f"Strategy #{pos.get('strategy_id', '?')}")
+            legs_data = pos.get("legs", "[]")
+            if isinstance(legs_data, str):
+                try:
+                    legs_list = _json.loads(legs_data)
+                except (ValueError, TypeError):
+                    legs_list = []
+            else:
+                legs_list = legs_data if isinstance(legs_data, list) else []
+
+            option_desc = _build_option_desc(legs_list)
+            entry_price = pos.get("entry_price", 0.0)
+            current_mark = pos.get("current_mark", 0.0)
+            unrealized = pos.get("unrealized_pnl", 0.0)
+
+            pos_lines.append(
+                f"**{strategy_name}** | {option_desc} | "
+                f"Entry: {_fmt_price(entry_price)} | "
+                f"Now: {_fmt_price(current_mark)} | "
+                f"P/L: {_fmt_price(unrealized)}"
+            )
+        embed.add_field(
+            name=f"Active Positions ({len(positions)})",
+            value="\n".join(pos_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Active Positions (0)",
+            value="No open positions",
+            inline=False,
+        )
+
+    # Field 2: Today's Trades (only if there are fills)
+    if todays_fills:
+        fill_lines = []
+        for fill in todays_fills[:8]:
+            filled_at = fill.get("filled_at", "")
+            time_et = filled_at[11:16] if len(filled_at) > 16 else filled_at
+            direction = fill.get("direction", "")
+            action = "OPEN" if direction == "open" else "CLOSE"
+            fill_price = fill.get("fill_price", 0.0)
+            slippage = fill.get("slippage", 0.0)
+
+            fill_lines.append(
+                f"`{time_et}` {action} @ "
+                f"{_fmt_price(fill_price)} (slip: ${slippage:.4f})"
+            )
+        embed.add_field(
+            name=f"Today's Trades ({len(todays_fills)})",
+            value="\n".join(fill_lines),
+            inline=False,
+        )
+
+    # Fields 3-8: Summary stats
+    embed.add_field(name="Total P/L", value=_fmt_price(total_pnl), inline=True)
+    embed.add_field(name="Win Rate", value=f"{portfolio.win_rate:.1%}", inline=True)
+    embed.add_field(name="Trades", value=str(portfolio.total_trades), inline=True)
+    embed.add_field(name="Sharpe", value=f"{portfolio.sharpe_ratio:.3f}", inline=True)
+    embed.add_field(name="Max DD", value=f"{portfolio.max_drawdown:.2%}", inline=True)
+    embed.add_field(
+        name="Strategies",
+        value=", ".join(portfolio.strategies_active) if portfolio.strategies_active else "None",
+        inline=True,
+    )
+
+    embed.set_footer(text="SPY Options Employee | Paper Trading")
+    return embed
+
+
+def build_paper_history_embed(
+    trades: list[dict],
+    strategy_filter: str | None,
+    days: int,
+    page: int = 1,
+    page_size: int = 15,
+) -> discord.Embed:
+    """Build a paper trade history embed with pagination.
+
+    Args:
+        trades: List of trade dicts (pre-filtered by date/strategy).
+        strategy_filter: Strategy name if filtered, None for all.
+        days: Lookback period used.
+        page: Current page (1-indexed).
+        page_size: Trades per page.
+
+    Returns:
+        Discord Embed with trade history.
+    """
+    total = len(trades)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * page_size
+    end_idx = min(start_idx + page_size, total)
+
+    if strategy_filter:
+        title = f"Paper Trade History -- {strategy_filter}"
+    else:
+        title = f"Paper Trade History -- Last {days} days"
+
+    # Cumulative PnL across all trades (not just current page)
+    cumulative_pnl = sum(
+        (t.get("total_pnl", 0) - t.get("fees", 0)) for t in trades
+    )
+
+    if not trades:
+        color = COLOR_INFO
+    elif cumulative_pnl > 0:
+        color = COLOR_BULLISH
+    else:
+        color = COLOR_BEARISH
+
+    embed = discord.Embed(
+        title=title,
+        description=f"Showing {start_idx + 1}-{end_idx} of {total} trades" if total > 0 else "No trades found",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Field 1: Trades
+    if total > 0:
+        page_trades = trades[start_idx:end_idx]
+        trade_lines = []
+        for t in page_trades:
+            exit_date = t.get("exit_date", "N/A")
+            strategy_name = t.get("strategy_name", f"#{t.get('strategy_id', '?')}")
+            entry_price = t.get("entry_price", 0.0)
+            exit_price = t.get("exit_price", 0.0)
+            net_pnl = t.get("total_pnl", 0.0) - t.get("fees", 0.0)
+            close_reason = t.get("close_reason", "")
+
+            trade_lines.append(
+                f"`{exit_date}` {strategy_name} | "
+                f"{_fmt_price(entry_price)} -> {_fmt_price(exit_price)} | "
+                f"P/L: ${net_pnl:+,.2f} | {close_reason}"
+            )
+
+        embed.add_field(
+            name="Trades",
+            value="\n".join(trade_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Trades",
+            value="No trades in this period.",
+            inline=False,
+        )
+
+    # Summary stats across all trades
+    embed.add_field(name="Cumulative P/L", value=f"${cumulative_pnl:+,.2f}", inline=True)
+    embed.add_field(name="Trade Count", value=str(total), inline=True)
+
+    avg_trade = cumulative_pnl / total if total > 0 else 0.0
+    embed.add_field(name="Avg Trade", value=f"${avg_trade:+,.2f}", inline=True)
+
+    wins = sum(1 for t in trades if (t.get("total_pnl", 0) - t.get("fees", 0)) > 0)
+    win_rate = wins / total if total > 0 else 0.0
+    embed.add_field(name="Win Rate", value=f"{win_rate:.1%}", inline=True)
+
+    embed.set_footer(text=f"Page {page}/{total_pages} | SPY Options Employee | Paper Trading")
+    return embed
+
+
+def build_paper_position_detail_embed(
+    position: dict,
+    strategy_name: str,
+    fills: list[dict],
+) -> discord.Embed:
+    """Build a detailed position embed for /paper_position.
+
+    Args:
+        position: Full position dict from PositionTracker.
+        strategy_name: Name of the owning strategy.
+        fills: Fill records from the opening order.
+
+    Returns:
+        Discord Embed with position details.
+    """
+    import json as _json
+
+    pos_id = position.get("id", "?")
+    status = position.get("status", "unknown")
+    opened_at = position.get("opened_at", "N/A")
+    unrealized = position.get("unrealized_pnl", 0.0)
+
+    if unrealized > 0:
+        color = COLOR_BULLISH
+    elif unrealized < 0:
+        color = COLOR_BEARISH
+    else:
+        color = COLOR_INFO
+
+    embed = discord.Embed(
+        title=f"Position #{pos_id} -- {strategy_name}",
+        description=f"Status: {status} | Opened: {opened_at}",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Field 1: Legs
+    legs_data = position.get("legs", "[]")
+    if isinstance(legs_data, str):
+        try:
+            legs_list = _json.loads(legs_data)
+        except (ValueError, TypeError):
+            legs_list = []
+    else:
+        legs_list = legs_data if isinstance(legs_data, list) else []
+
+    if legs_list:
+        leg_lines = []
+        for leg in legs_list:
+            action = leg.get("action", "?").upper()
+            qty = leg.get("quantity", 1)
+            expiry = leg.get("expiry", "?")
+            strike = leg.get("strike", 0)
+            side = "C" if leg.get("option_type", "").lower() == "call" else "P"
+            fill_price = leg.get("fill_price", 0.0)
+            delta = leg.get("delta", 0.0)
+            leg_lines.append(
+                f"{action} {qty}x SPX {expiry} {int(strike)}{side} "
+                f"@ ${fill_price:.4f} (delta: {delta:.3f})"
+            )
+        embed.add_field(
+            name="Legs",
+            value="\n".join(leg_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Legs", value="No leg data", inline=False)
+
+    # Fields 2-8
+    entry_price = position.get("entry_price", 0.0)
+    current_mark = position.get("current_mark", 0.0)
+    max_profit = position.get("max_profit", 0.0)
+    max_loss = position.get("max_loss", 0.0)
+    last_mark_at = position.get("last_mark_at", "N/A")
+
+    pnl_sign = "[+]" if unrealized > 0 else "[-]" if unrealized < 0 else "[=]"
+
+    embed.add_field(name="Entry Price", value=_fmt_price(entry_price), inline=True)
+    embed.add_field(name="Current Mark", value=_fmt_price(current_mark), inline=True)
+    embed.add_field(
+        name="Unrealized P/L",
+        value=f"{pnl_sign} {_fmt_price(unrealized)}",
+        inline=True,
+    )
+    embed.add_field(name="Max Profit", value=_fmt_price(max_profit), inline=True)
+    embed.add_field(name="Max Loss", value=_fmt_price(max_loss), inline=True)
+
+    pnl_pct = (unrealized / max_profit * 100) if max_profit != 0 else 0.0
+    embed.add_field(name="P/L % of Max", value=f"{pnl_pct:.1f}%", inline=True)
+
+    embed.add_field(name="Last Mark", value=str(last_mark_at)[:19], inline=True)
+
+    embed.set_footer(text="SPY Options Employee | Position Detail")
+    return embed
+
+
+def build_paper_daily_pnl_embed(
+    portfolio: "PortfolioSummary",
+    todays_trades: list[dict],
+    date_str: str,
+) -> discord.Embed:
+    """Build a daily P/L summary embed for auto-post at 16:15 ET.
+
+    Args:
+        portfolio: PortfolioSummary dataclass.
+        todays_trades: List of trades closed today.
+        date_str: Formatted date string.
+
+    Returns:
+        Discord Embed with daily P/L summary.
+    """
+    daily_pnl = portfolio.daily_pnl
+
+    if daily_pnl > 0:
+        color = COLOR_BULLISH
+    elif daily_pnl < 0:
+        color = COLOR_BEARISH
+    else:
+        color = COLOR_NEUTRAL
+
+    embed = discord.Embed(
+        title=f"Paper Trading Daily P/L -- {date_str}",
+        description=f"Day P/L: ${daily_pnl:+,.2f}",
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Realized P/L from today's closed trades
+    realized_today = sum(t.get("total_pnl", 0.0) - t.get("fees", 0.0) for t in todays_trades)
+    embed.add_field(name="Realized P/L", value=f"${realized_today:+,.2f}", inline=True)
+    embed.add_field(name="Unrealized P/L", value=f"${portfolio.unrealized_pnl:+,.2f}", inline=True)
+    embed.add_field(name="Total Day P/L", value=f"${daily_pnl:+,.2f}", inline=True)
+
+    # Trades today
+    if todays_trades:
+        trade_lines = []
+        for t in todays_trades[:10]:
+            strategy_name = t.get("strategy_name", f"#{t.get('strategy_id', '?')}")
+            net_pnl = t.get("total_pnl", 0.0) - t.get("fees", 0.0)
+            reason = t.get("close_reason", "")
+            trade_lines.append(f"{strategy_name}: ${net_pnl:+,.2f} ({reason})")
+        embed.add_field(
+            name=f"Trades Today ({len(todays_trades)})",
+            value="\n".join(trade_lines),
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Trades Today (0)",
+            value="No trades closed today",
+            inline=False,
+        )
+
+    # Cumulative stats
+    cumulative_pnl = portfolio.realized_pnl + portfolio.unrealized_pnl
+    embed.add_field(name="Cumulative P/L", value=f"${cumulative_pnl:+,.2f}", inline=True)
+    embed.add_field(name="Portfolio Value", value=_fmt_price(portfolio.total_equity), inline=True)
+    embed.add_field(name="Open Positions", value=str(portfolio.open_positions), inline=True)
+
+    embed.set_footer(text="SPY Options Employee | Paper Daily")
+    return embed
+
+
+def build_paper_fill_alert_embed(
+    order: dict,
+    fills: list[dict],
+    strategy_name: str,
+) -> discord.Embed:
+    """Build a fill alert embed for real-time notifications.
+
+    Args:
+        order: The filled order dict.
+        fills: List of fill dicts for the order.
+        strategy_name: Name of the strategy.
+
+    Returns:
+        Discord Embed with fill details.
+    """
+    direction = order.get("direction", "").upper()
+    order_type = order.get("order_type", "")
+    num_legs = len(fills)
+    quantity = order.get("quantity", 1)
+
+    embed = discord.Embed(
+        title=f"PAPER FILL -- {strategy_name}",
+        description=f"{direction} {order_type} | {num_legs} legs | Qty: {quantity}",
+        color=COLOR_INFO,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Field 1: Fills
+    if fills:
+        fill_lines = []
+        for f in fills:
+            action = f.get("action", "?").upper()
+            expiry = f.get("expiry", "?")
+            strike = f.get("strike", 0)
+            side = "C" if f.get("option_type", "").lower() == "call" else "P"
+            fill_price = f.get("fill_price", 0.0)
+            mid = f.get("mid", 0.0)
+            slippage = f.get("slippage", 0.0)
+
+            fill_lines.append(
+                f"{action} SPX {expiry} {int(strike)}{side} "
+                f"@ ${fill_price:.4f} (mid: ${mid:.4f}, slip: ${slippage:.4f})"
+            )
+        embed.add_field(
+            name="Fills",
+            value="\n".join(fill_lines),
+            inline=False,
+        )
+
+    # Summary fields
+    net_price = order.get("fill_price", 0.0)
+    total_slippage = sum(f.get("slippage", 0.0) for f in fills)
+    filled_at = order.get("filled_at", "")
+
+    embed.add_field(name="Net Price", value=f"${net_price:.4f}", inline=True)
+    embed.add_field(name="Total Slippage", value=f"${total_slippage:.4f}", inline=True)
+    embed.add_field(name="Time", value=filled_at[:19] if filled_at else "N/A", inline=True)
+
+    embed.set_footer(text="SPY Options Employee | Paper Fill")
     return embed
 
 
