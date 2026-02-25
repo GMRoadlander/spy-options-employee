@@ -15,7 +15,7 @@ Background tasks:
 
 import logging
 from datetime import datetime, time, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import discord
 from discord import app_commands
@@ -952,6 +952,44 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
     async def before_paper_daily(self) -> None:
         """Wait for bot to be ready."""
         await self.bot.wait_until_ready()
+
+    # -- Alert methods (called by scheduler) ------------------------------------
+
+    async def post_daily_pnl_alert(self, summary: Any) -> None:
+        """Post an alert when daily PnL exceeds 2% of starting capital.
+
+        Called by the scheduler during post-market processing.
+
+        Args:
+            summary: PortfolioSummary with daily_pnl and other fields.
+        """
+        channel = self._get_paper_channel()
+        if channel is None:
+            return
+
+        try:
+            pnl = summary.daily_pnl
+            direction = "gain" if pnl > 0 else "loss"
+            color = 0x00FF00 if pnl > 0 else 0xFF0000
+
+            embed = discord.Embed(
+                title=f"Paper Trading Alert: Significant Daily {direction.title()}",
+                description=(
+                    f"**Daily P/L: ${pnl:+,.2f}**\n"
+                    f"Total Equity: ${summary.total_equity:,.2f}\n"
+                    f"Open Positions: {summary.open_positions}\n"
+                    f"Win Rate: {summary.win_rate:.1%}"
+                ),
+                color=color,
+                timestamp=datetime.now(timezone.utc),
+            )
+            embed.set_footer(text="SPY Options Employee | Paper Trading Alert")
+            await channel.send(embed=embed)
+            logger.info("Paper PnL alert posted: $%.2f %s", pnl, direction)
+        except discord.HTTPException as exc:
+            logger.error("Failed to post paper PnL alert: %s", exc)
+        except Exception as exc:
+            logger.error("Paper PnL alert error: %s", exc, exc_info=True)
 
     # -- Fill notification (called by engine/scheduler) -----------------------
 

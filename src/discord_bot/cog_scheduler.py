@@ -319,6 +319,34 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
                 except Exception as exc:
                     logger.error("Paper engine daily snapshot failed: %s", exc, exc_info=True)
 
+                # Portfolio risk analysis (Phase 4-5)
+                portfolio_analyzer = getattr(self.bot, "portfolio_analyzer", None)
+                if portfolio_analyzer is not None:
+                    try:
+                        open_pos = await paper_engine.position_tracker.get_open_positions()
+                        if open_pos:
+                            chain = chains.get("SPX") or chains.get("SPY")
+                            spot = chain.spot_price if chain else 0.0
+                            if spot > 0:
+                                greeks = portfolio_analyzer.compute_greeks(open_pos, spot)
+                                logger.info(
+                                    "Portfolio daily analysis complete: delta=%.1f gamma=%.4f theta=%.1f vega=%.1f",
+                                    greeks.delta, greeks.gamma, greeks.theta, greeks.vega,
+                                )
+                    except Exception as exc:
+                        logger.error("Portfolio daily analysis failed: %s", exc, exc_info=True)
+
+                # Paper trading alerts (Phase 4-7)
+                try:
+                    summary = await paper_engine.get_portfolio_summary()
+                    # Alert on significant daily PnL (>2% of capital)
+                    if abs(summary.daily_pnl) > paper_engine._config.starting_capital * 0.02:
+                        paper_cog = self.bot.get_cog("PaperTrading")
+                        if paper_cog is not None and hasattr(paper_cog, "post_daily_pnl_alert"):
+                            await paper_cog.post_daily_pnl_alert(summary)
+                except Exception as exc:
+                    logger.error("Paper alert check failed: %s", exc, exc_info=True)
+
     # -- ML daily update pipeline (Phase 3) ------------------------------------
 
     async def _handle_ml_daily_update(self) -> None:
