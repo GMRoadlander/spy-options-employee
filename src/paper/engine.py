@@ -100,6 +100,9 @@ class PaperTradingEngine:
         # Risk management (sub-plan 4-5)
         self.risk_manager: Any = None  # Set externally after init
 
+        # Signal logger (wired by bot.py for Bayesian calibration)
+        self._signal_logger: Any = None
+
         # Daily state
         self._tick_count_today: int = 0
         self._daily_errors: list[str] = []
@@ -167,6 +170,10 @@ class PaperTradingEngine:
                                 "Opened position #%d from order #%d",
                                 position_id, order["id"],
                             )
+                            await self._log_paper_signal(
+                                "paper_entry", order["strategy_id"],
+                                position_id, order["id"],
+                            )
                         elif order["direction"] == "close":
                             # Close order filled -- find the position to close
                             # The position_id is stored in the order metadata
@@ -186,6 +193,20 @@ class PaperTradingEngine:
                                 logger.info(
                                     "Closed position #%d -> trade #%d",
                                     pos_id, trade_id,
+                                )
+                                # Log paper exit signal with PnL
+                                try:
+                                    trade_row = await self._db.execute(
+                                        "SELECT total_pnl FROM paper_trades WHERE id = ?",
+                                        (trade_id,),
+                                    )
+                                    trade_data = await trade_row.fetchone()
+                                    total_pnl = trade_data[0] if trade_data else None
+                                except Exception:
+                                    total_pnl = None
+                                await self._log_paper_signal(
+                                    "paper_exit", order["strategy_id"],
+                                    pos_id, order["id"], pnl=total_pnl,
                                 )
 
                 except Exception as e:
@@ -311,6 +332,40 @@ class PaperTradingEngine:
         if self.risk_manager is not None:
             self.risk_manager.reset_daily_state()
         logger.info("Paper trading engine: start of day")
+
+    async def _log_paper_signal(
+        self,
+        signal_type: str,
+        strategy_id: int,
+        position_id: int | None,
+        order_id: int,
+        pnl: float | None = None,
+    ) -> None:
+        """Log paper trade events to signal_log for Bayesian calibration."""
+        if self._signal_logger is None:
+            return
+
+        try:
+            from src.db.signal_log import SignalEvent
+            metadata = {
+                "strategy_id": strategy_id,
+                "position_id": position_id,
+                "order_id": order_id,
+            }
+            if pnl is not None:
+                metadata["pnl"] = pnl
+
+            event = SignalEvent(
+                signal_type=signal_type,
+                ticker="SPX",
+                direction="neutral",
+                strength=0.5,
+                source="paper_engine",
+                metadata=metadata,
+            )
+            await self._signal_logger.log_signal(event)
+        except Exception as exc:
+            logger.warning("Failed to log paper signal: %s", exc)
 
     def set_risk_manager(self, risk_manager: Any) -> None:
         """Attach a RiskManager for pre-trade checks and monitoring.
