@@ -82,7 +82,7 @@
 
 ---
 
-## Phase 4: Paper Trading & Validation (~$400/mo) — IN PROGRESS (5/8 plans) — FINAL PHASE
+## Phase 4: Paper Trading & Validation (~$400/mo) — IN PROGRESS (6/8 plans) — FINAL PHASE
 
 **Goal**: Validate strategies with realistic paper trading simulation. Shadow mode generates signals. Paper trading engine simulates realistic fills with slippage. Strategies prove themselves with real market data. This is the final phase — the system is a permanent research + paper trading platform.
 
@@ -92,7 +92,7 @@
 - [x] Slippage model (dynamic spread, configurable per strategy type)
 - [x] Shadow mode & exit monitor
 - [x] Paper portfolio analytics — Greeks aggregation, VaR, stress testing, position sizing, risk limits, circuit breakers
-- [ ] Discord paper trading cog — interactive paper trading commands
+- [x] Discord paper trading cog — 6 slash commands, paginated history, close confirmation, charts, daily auto-post
 - [ ] Discord performance reporting — daily summaries, weekly reviews, monthly deep reports, equity curves, strategy comparison
 - [ ] Integration, wiring & E2E tests
 
