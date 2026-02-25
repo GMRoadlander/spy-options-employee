@@ -93,7 +93,7 @@
 - [x] Shadow mode & exit monitor
 - [x] Paper portfolio analytics — Greeks aggregation, VaR, stress testing, position sizing, risk limits, circuit breakers
 - [x] Discord paper trading cog — 6 slash commands, paginated history, close confirmation, charts, daily auto-post
-- [ ] Discord performance reporting — daily summaries, weekly reviews, monthly deep reports, equity curves, strategy comparison
+- [x] Discord performance reporting — daily summaries, weekly reviews, monthly deep reports, equity curves, strategy comparison
 - [ ] Integration, wiring & E2E tests
 
 **Research needed**: 🔬 Realistic SPX slippage modeling (bid-ask width by strike/DTE), portfolio correlation computation

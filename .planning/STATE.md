@@ -4,7 +4,7 @@
 
 - **Milestone**: 1.0
 - **Phase**: 4 (Paper Trading & Validation) -- In progress
-- **Status**: 6/8 plans complete. Executing Phase 4 (final phase).
+- **Status**: 7/8 plans complete. Executing Phase 4 (final phase).
 - **Last updated**: 2026-02-25
 
 ## Phase Progress
@@ -15,7 +15,7 @@
 | 2 | Strategy Research Engine | complete (3/3 plans) |
 | 2.1 | Code Review Fixes | complete (1/1 plans) |
 | 3 | ML Intelligence Layer | complete (9/9 plans) |
-| 4 | Paper Trading & Validation | in progress (6/8 plans) — FINAL PHASE |
+| 4 | Paper Trading & Validation | in progress (7/8 plans) — FINAL PHASE |
 
 ## Session Log
 
@@ -52,3 +52,4 @@
 | 2026-02-23 | roadmap_restructured | Removed Phase 5 (Autonomous Trading). System is now a permanent research + paper trading platform. No live trading ever. Phase 4 simplified from 10 to 8 plans: removed Promotion Workflow (4-6) and Schwab API (4-7). Renumbered remaining plans. Strategy lifecycle: IDEA → DEFINED → BACKTEST → PAPER → RETIRED (no LIVE). |
 | 2026-02-25 | plan_04-05_complete | Paper portfolio analytics: RiskConfig, PortfolioAnalyzer (Greeks/VaR/concentration/correlation), StressTestEngine (18 scenarios), position sizing (Kelly), RiskManager (pre-trade + circuit breakers), DB schema, engine wiring. 1238 tests passing (+128 new). 8 commits. |
 | 2026-02-25 | plan_04-06_complete | Discord paper trading cog: PaperTradingCog (6 slash commands), 5 embed builders, 3 chart functions, paginated history, close confirmation, daily auto-post, fill notifications. 1316 tests passing (+78 new). 5 commits. |
+| 2026-02-25 | plan_04-07_complete | Discord performance reporting: PaperPerformanceReporter (daily/weekly/monthly), 6 embed builders, 8 chart generators, degradation detection, journal integration, paper channel auto-post. 1411 tests passing (+95 new). 6 commits. |
