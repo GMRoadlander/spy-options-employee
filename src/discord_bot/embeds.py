@@ -152,12 +152,12 @@ def build_gex_embed(result: AnalysisResult) -> discord.Embed:
     )
     embed.add_field(
         name="Gamma Ceiling (resistance)",
-        value=_fmt_price(gex.gamma_ceiling),
+        value=_fmt_price(gex.gamma_ceiling) if gex.gamma_ceiling is not None else "N/A",
         inline=True,
     )
     embed.add_field(
         name="Gamma Floor (support)",
-        value=_fmt_price(gex.gamma_floor),
+        value=_fmt_price(gex.gamma_floor) if gex.gamma_floor is not None else "N/A",
         inline=True,
     )
     embed.add_field(
@@ -505,8 +505,8 @@ def build_dashboard_embed(
             f"**PCR:** {pcr.volume_pcr:.3f} ({pcr.signal.replace('_', ' ').title()}) | "
             f"Dealer: {pcr.dealer_positioning.replace('_', ' ').title()}\n"
             f"**Squeeze:** {gex.squeeze_probability:.0%} | "
-            f"Ceiling: {_fmt_price(gex.gamma_ceiling)} | "
-            f"Floor: {_fmt_price(gex.gamma_floor)}"
+            f"Ceiling: {_fmt_price(gex.gamma_ceiling) if gex.gamma_ceiling is not None else 'N/A'} | "
+            f"Floor: {_fmt_price(gex.gamma_floor) if gex.gamma_floor is not None else 'N/A'}"
         )
 
         embed.add_field(name=ticker, value=summary, inline=False)

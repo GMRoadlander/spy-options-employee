@@ -122,6 +122,30 @@ class DataManager:
             del self._cache[ticker]
             logger.debug("DataManager: cache invalidated for %s", ticker)
 
+    @staticmethod
+    def _check_chain_quality(chain: OptionsChain) -> str:
+        """Check data quality of an options chain based on OI and IV coverage.
+
+        Returns:
+            "ok" — >= 10% contracts with OI > 0 AND >= 10% with IV > 0
+            "degraded" — either metric below 10% but above 0%
+            "unusable" — both OI and IV at 0%
+        """
+        if not chain.contracts:
+            return "unusable"
+
+        total = len(chain.contracts)
+        oi_count = sum(1 for c in chain.contracts if c.open_interest > 0)
+        iv_count = sum(1 for c in chain.contracts if c.iv > 0)
+        oi_pct = oi_count / total
+        iv_pct = iv_count / total
+
+        if oi_pct >= 0.10 and iv_pct >= 0.10:
+            return "ok"
+        if oi_pct == 0 and iv_pct == 0:
+            return "unusable"
+        return "degraded"
+
     async def get_chain(self, ticker: str) -> OptionsChain | None:
         """Fetch the options chain for a ticker, with caching and fallback.
 
@@ -145,34 +169,91 @@ class DataManager:
         if cached is not None:
             return cached
 
+        attempts: list[str] = []
+        chain: OptionsChain | None = None
+
         # Try Tastytrade first (if configured)
-        chain = await self._try_tastytrade(ticker_upper)
+        chain, attempt = await self._try_source(
+            ticker_upper, "tastytrade", self._try_tastytrade,
+        )
+        if attempt:
+            attempts.append(attempt)
 
         # Fallback to CBOE
         if chain is None:
-            chain = await self._try_cboe(ticker_upper)
+            chain, attempt = await self._try_source(
+                ticker_upper, "cboe", self._try_cboe,
+            )
+            if attempt:
+                attempts.append(attempt)
 
         # Fallback to Tradier
         if chain is None:
-            chain = await self._try_tradier(ticker_upper)
+            chain, attempt = await self._try_source(
+                ticker_upper, "tradier", self._try_tradier,
+            )
+            if attempt:
+                attempts.append(attempt)
 
         # Cache and return
         if chain is not None:
             self._set_cached(ticker_upper, chain)
             logger.info(
-                "DataManager: %s chain ready — %d contracts, spot=%.2f, source=%s",
+                "DataManager: %s chain resolved — source=%s, tried=[%s], "
+                "quality=%s, %d contracts, spot=%.2f",
                 ticker_upper,
+                chain.source,
+                ", ".join(attempts),
+                chain.data_quality,
                 len(chain.contracts),
                 chain.spot_price,
-                chain.source,
             )
         else:
             logger.error(
-                "DataManager: all data sources failed for %s",
+                "DataManager: all data sources failed for %s — tried=[%s]",
                 ticker_upper,
+                ", ".join(attempts),
             )
 
         return chain
+
+    async def _try_source(
+        self,
+        ticker: str,
+        source_name: str,
+        fetch_fn,
+    ) -> tuple[OptionsChain | None, str | None]:
+        """Try a source and apply quality checks. Returns (chain_or_None, attempt_log)."""
+        raw_chain = await fetch_fn(ticker)
+        if raw_chain is None:
+            return None, None  # fetch_fn already logged the reason
+
+        # Quality check
+        quality = self._check_chain_quality(raw_chain)
+        raw_chain.data_quality = quality
+
+        oi_count = sum(1 for c in raw_chain.contracts if c.open_interest > 0)
+        iv_count = sum(1 for c in raw_chain.contracts if c.iv > 0)
+        total = len(raw_chain.contracts)
+        oi_pct = int(100 * oi_count / total) if total else 0
+        iv_pct = int(100 * iv_count / total) if total else 0
+        stats = f"oi={oi_pct}%,iv={iv_pct}%"
+
+        if quality == "unusable":
+            logger.error(
+                "DataManager: %s returned unusable chain for %s (%s) — skipping",
+                source_name, ticker, stats,
+            )
+            return None, f"{source_name}:unusable({stats})"
+
+        if quality == "degraded":
+            logger.warning(
+                "DataManager: %s returned degraded chain for %s (%s)",
+                source_name, ticker, stats,
+            )
+            return raw_chain, f"{source_name}:degraded({stats})"
+
+        return raw_chain, f"{source_name}:ok"
 
     async def _try_tastytrade(self, ticker: str) -> OptionsChain | None:
         """Attempt to fetch from Tastytrade API."""
