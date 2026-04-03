@@ -13,7 +13,6 @@ All commands handle missing/uninitialized ML components gracefully.
 
 import io
 import logging
-from typing import Optional
 
 import discord
 from discord import app_commands

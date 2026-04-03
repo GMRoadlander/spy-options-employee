@@ -29,19 +29,7 @@ from src.paper.models import ExitSignal, PaperTradingConfig
 
 logger = logging.getLogger(__name__)
 
-try:
-    import zoneinfo
-
-    ET = zoneinfo.ZoneInfo("US/Eastern")
-except ImportError:
-    from datetime import timezone
-
-    ET = timezone(timedelta(hours=-5))  # type: ignore[assignment]
-
-
-def _now_et() -> datetime:
-    """Get the current time in Eastern Time."""
-    return datetime.now(ET)
+from src.utils import ET, now_et as _now_et
 
 
 def _is_third_friday(d: date) -> bool:

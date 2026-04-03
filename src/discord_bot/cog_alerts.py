@@ -11,7 +11,6 @@ Uses cooldown logic from Store to prevent alert spam (30-min cooldown per alert 
 
 import logging
 from datetime import datetime
-from typing import Optional
 
 import discord
 from discord.ext import commands

@@ -29,17 +29,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-try:
-    import zoneinfo
-    ET = zoneinfo.ZoneInfo(config.timezone)
-except ImportError:
-    from datetime import timezone as tz
-    ET = tz(timedelta(hours=-5))  # type: ignore[assignment]
-
-
-def _now_et() -> datetime:
-    """Get the current time in Eastern Time."""
-    return datetime.now(ET)
+from src.utils import ET, now_et as _now_et
 
 
 # -- Autocomplete helpers ----------------------------------------------------

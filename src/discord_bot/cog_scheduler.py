@@ -13,7 +13,6 @@ Behavior:
 import asyncio
 import logging
 from datetime import datetime, time, timedelta
-from typing import Optional
 
 import discord
 from discord.ext import commands, tasks
@@ -25,18 +24,7 @@ from src.discord_bot.embeds import build_dashboard_embed, build_full_analysis_em
 
 logger = logging.getLogger(__name__)
 
-try:
-    import zoneinfo
-    ET = zoneinfo.ZoneInfo(config.timezone)
-except ImportError:
-    # Fallback for older Python without zoneinfo
-    from datetime import timezone
-    ET = timezone(timedelta(hours=-5))  # type: ignore[assignment]
-
-
-def _now_et() -> datetime:
-    """Get the current time in Eastern Time."""
-    return datetime.now(ET)
+from src.utils import ET, now_et as _now_et
 
 
 def _is_market_hours() -> bool:
