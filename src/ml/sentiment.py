@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
@@ -62,6 +63,17 @@ class SentimentScorer:
             model=self._model_name,
         )
         logger.info("FinBERT model loaded successfully")
+
+    async def ensure_loaded_async(self) -> None:
+        """Load FinBERT in a thread pool to avoid blocking the event loop.
+
+        Call this from async contexts (e.g., scheduler) instead of letting
+        the synchronous ``_ensure_loaded`` block the event loop on first use.
+        """
+        if self._pipeline is not None:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._ensure_loaded)
 
     @staticmethod
     def _map_sentiment_value(label: str, score: float) -> float:
@@ -227,6 +239,9 @@ class SentimentManager:
             Aggregate sentiment dict with velocity, or ``None`` if no
             headlines were found.
         """
+        # Pre-load model off the event loop to avoid blocking on first use
+        await self._scorer.ensure_loaded_async()
+
         # Fetch headlines.
         headlines = await self._news_client.fetch_headlines(ticker=ticker)
 

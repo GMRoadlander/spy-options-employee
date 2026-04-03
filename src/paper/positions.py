@@ -308,39 +308,45 @@ class PositionTracker:
             "exit": close_legs,
         })
 
-        # Create trade record
-        trade_cursor = await self._db.execute(
-            """
-            INSERT INTO paper_trades
-                (strategy_id, position_id, entry_date, exit_date,
-                 holding_days, entry_price, exit_price, realized_pnl,
-                 total_pnl, fees, slippage_cost, settlement_type,
-                 close_reason, legs_detail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                position["strategy_id"], position_id,
-                position["opened_at"][:10], now.isoformat()[:10],
-                holding_days, round(entry_price, 4), round(exit_price, 4),
-                round(realized_pnl, 4), round(total_pnl, 2),
-                round(fees, 2), round(slippage_cost, 2),
-                settlement_type, reason, legs_detail,
-            ),
-        )
+        # Create trade record + update position in explicit transaction
+        # to prevent partial writes on crash (trade exists but position not closed)
+        await self._db.execute("BEGIN IMMEDIATE")
+        try:
+            trade_cursor = await self._db.execute(
+                """
+                INSERT INTO paper_trades
+                    (strategy_id, position_id, entry_date, exit_date,
+                     holding_days, entry_price, exit_price, realized_pnl,
+                     total_pnl, fees, slippage_cost, settlement_type,
+                     close_reason, legs_detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    position["strategy_id"], position_id,
+                    position["opened_at"][:10], now.isoformat()[:10],
+                    holding_days, round(entry_price, 4), round(exit_price, 4),
+                    round(realized_pnl, 4), round(total_pnl, 2),
+                    round(fees, 2), round(slippage_cost, 2),
+                    settlement_type, reason, legs_detail,
+                ),
+            )
 
-        trade_id = trade_cursor.lastrowid
+            trade_id = trade_cursor.lastrowid
 
-        # Update position status
-        await self._db.execute(
-            """
-            UPDATE paper_positions
-            SET status = 'closed', closed_at = ?, close_reason = ?,
-                close_order_id = ?, unrealized_pnl = 0.0
-            WHERE id = ?
-            """,
-            (now.isoformat(), reason, close_order_id, position_id),
-        )
-        await self._db.commit()
+            # Update position status
+            await self._db.execute(
+                """
+                UPDATE paper_positions
+                SET status = 'closed', closed_at = ?, close_reason = ?,
+                    close_order_id = ?, unrealized_pnl = 0.0
+                WHERE id = ?
+                """,
+                (now.isoformat(), reason, close_order_id, position_id),
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
 
         logger.info(
             "Closed position #%d: trade #%d pnl=%.2f fees=%.2f net=%.2f reason=%s",
@@ -468,36 +474,42 @@ class PositionTracker:
             "exit": {"settlement_price": settlement_price, "type": "expiration"},
         })
 
-        trade_cursor = await self._db.execute(
-            """
-            INSERT INTO paper_trades
-                (strategy_id, position_id, entry_date, exit_date,
-                 holding_days, entry_price, exit_price, realized_pnl,
-                 total_pnl, fees, slippage_cost, settlement_type,
-                 close_reason, legs_detail)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, 'expiration', ?)
-            """,
-            (
-                position["strategy_id"], position_id,
-                position["opened_at"][:10], now.isoformat()[:10],
-                holding_days, round(entry_price, 4), round(exit_value, 4),
-                round(realized_pnl, 4), round(total_pnl, 2),
-                round(fees, 2), settlement_type, legs_detail,
-            ),
-        )
+        # Atomic transaction: trade record + position update together
+        await self._db.execute("BEGIN IMMEDIATE")
+        try:
+            trade_cursor = await self._db.execute(
+                """
+                INSERT INTO paper_trades
+                    (strategy_id, position_id, entry_date, exit_date,
+                     holding_days, entry_price, exit_price, realized_pnl,
+                     total_pnl, fees, slippage_cost, settlement_type,
+                     close_reason, legs_detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, 'expiration', ?)
+                """,
+                (
+                    position["strategy_id"], position_id,
+                    position["opened_at"][:10], now.isoformat()[:10],
+                    holding_days, round(entry_price, 4), round(exit_value, 4),
+                    round(realized_pnl, 4), round(total_pnl, 2),
+                    round(fees, 2), settlement_type, legs_detail,
+                ),
+            )
 
-        trade_id = trade_cursor.lastrowid
+            trade_id = trade_cursor.lastrowid
 
-        await self._db.execute(
-            """
-            UPDATE paper_positions
-            SET status = 'expired', closed_at = ?, close_reason = 'expiration',
-                unrealized_pnl = 0.0
-            WHERE id = ?
-            """,
-            (now.isoformat(), position_id),
-        )
-        await self._db.commit()
+            await self._db.execute(
+                """
+                UPDATE paper_positions
+                SET status = 'expired', closed_at = ?, close_reason = 'expiration',
+                    unrealized_pnl = 0.0
+                WHERE id = ?
+                """,
+                (now.isoformat(), position_id),
+            )
+            await self._db.commit()
+        except Exception:
+            await self._db.rollback()
+            raise
 
         logger.info(
             "Expired position #%d: trade #%d settlement=%.2f pnl=%.2f",

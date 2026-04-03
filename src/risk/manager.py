@@ -194,7 +194,8 @@ class RiskManager:
                 if dte > cfg.max_dte:
                     reasons.append(f"DTE {dte} above maximum {cfg.max_dte}")
             except (ValueError, TypeError):
-                pass
+                logger.warning("Could not parse expiry '%s' for DTE check — rejecting leg", expiry_str)
+                reasons.append(f"Unparseable expiry '{expiry_str}' — cannot validate DTE")
 
         return reasons
 

@@ -489,12 +489,17 @@ class SpyBot(commands.Bot):
             self.paper_engine = None
             self.portfolio_analyzer = None
 
-        # Clean up old database entries
+        # Clean up old database entries and close connection
         if self.store is not None:
             try:
                 await self.store.cleanup_old()
                 logger.info("Store cleanup complete")
             except Exception as exc:
                 logger.error("Error during store cleanup: %s", exc)
+            try:
+                await self.store.close()
+                logger.info("Store connection closed")
+            except Exception as exc:
+                logger.error("Error closing store: %s", exc)
 
         await super().close()

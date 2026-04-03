@@ -437,7 +437,7 @@ class PaperTradingEngine:
                 metrics = await self.pnl_calculator.get_paper_metrics()
                 sharpe = metrics.sharpe_ratio
         except Exception:
-            pass
+            logger.warning("Failed to compute Sharpe ratio for portfolio summary", exc_info=True)
 
         # Active strategies
         strategies_active = []
@@ -449,7 +449,7 @@ class PaperTradingEngine:
                 )
                 strategies_active = [s["name"] for s in paper_strategies]
             except Exception:
-                pass
+                logger.warning("Failed to list active strategies for portfolio summary", exc_info=True)
 
         return PortfolioSummary(
             starting_capital=capital,
@@ -488,7 +488,7 @@ class PaperTradingEngine:
                 if strategy:
                     strategy_name = strategy.get("name", "")
             except Exception:
-                pass
+                logger.warning("Failed to fetch strategy name for strategy #%d", strategy_id, exc_info=True)
 
         # Get trades
         cursor = await self._db.execute(
@@ -529,7 +529,7 @@ class PaperTradingEngine:
                             days_in_paper = (datetime.now() - paper_start).days
                             break
             except Exception:
-                pass
+                logger.warning("Failed to compute days_in_paper for strategy #%d", strategy_id, exc_info=True)
 
         # Recommendation
         recommendation = _compute_recommendation(metrics, len(trades), days_in_paper, self._config)

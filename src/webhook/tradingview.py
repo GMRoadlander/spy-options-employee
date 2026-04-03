@@ -5,6 +5,7 @@ and queues alerts for Discord delivery.
 """
 
 import asyncio
+import hmac
 import logging
 from typing import Any
 
@@ -52,7 +53,7 @@ async def receive_tradingview_alert(
     """
     # Validate secret if configured
     if config.webhook_secret:
-        if x_webhook_secret != config.webhook_secret:
+        if not hmac.compare_digest(x_webhook_secret or "", config.webhook_secret):
             raise HTTPException(status_code=401, detail="Invalid webhook secret")
 
     logger.info(
