@@ -4,6 +4,9 @@ Uses temporary directories for isolation. No external services needed.
 """
 
 import pytest
+
+pytest.importorskip("pyarrow", reason="pyarrow not installed")
+
 import os
 import tempfile
 import shutil

@@ -4,6 +4,9 @@ All external SDK calls are mocked — no real API connections.
 """
 
 import pytest
+
+pytest.importorskip("tastytrade", reason="tastytrade SDK not installed")
+
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock

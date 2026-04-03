@@ -6,13 +6,16 @@ model selection, edge cases, and RegimeManager pipeline.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("hmmlearn", reason="hmmlearn not installed")
+
 import os
 import tempfile
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
-import pytest
 
 from src.ml.regime import MIN_OBSERVATIONS, RegimeDetector, RegimeManager
 
