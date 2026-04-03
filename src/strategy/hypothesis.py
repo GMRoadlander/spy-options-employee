@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any
 
 import aiosqlite
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class HypothesisManager:
             The created Hypothesis.
         """
         hyp_id = uuid.uuid4().hex[:12]
-        now = datetime.now()
+        now = now_et()
 
         if null_hypothesis is None:
             null_hypothesis = f"NOT({prediction})"
@@ -344,7 +345,7 @@ class HypothesisManager:
             raise ValueError(f"Hypothesis {hypothesis_id} not found")
 
         # Determine outcome from pipeline result
-        now = datetime.now()
+        now = now_et()
 
         # Extract metrics from typed PipelineResult (W5: no getattr chains)
         recommendation = pipeline_result.recommendation

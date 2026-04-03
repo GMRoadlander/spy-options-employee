@@ -20,6 +20,7 @@ import aiosqlite
 
 from src.data import OptionContract, OptionsChain
 from src.paper.models import PaperTradingConfig, SimulatedFill
+from src.utils import now_et, parse_dt
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class PositionTracker:
         Returns:
             The new position ID.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
 
         # Build legs detail from fills + the order's leg data
         fills_cursor = await self._db.execute(
@@ -172,7 +173,7 @@ class PositionTracker:
         unrealized_per_unit = entry_price + current_mark
         unrealized_pnl = unrealized_per_unit * quantity * self._config.spx_multiplier
 
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         await self._db.execute(
             """
             UPDATE paper_positions
@@ -232,7 +233,7 @@ class PositionTracker:
         if position is None:
             raise ValueError(f"Position #{position_id} not found")
 
-        now = datetime.now()
+        now = now_et()
         entry_legs = json.loads(position["legs"])
         entry_price = position["entry_price"]
         quantity = position["quantity"]
@@ -278,7 +279,7 @@ class PositionTracker:
         net_pnl = total_pnl - fees
 
         # Holding days
-        opened_at = datetime.fromisoformat(position["opened_at"])
+        opened_at = parse_dt(position["opened_at"])
         holding_days = (now - opened_at).days
 
         # Determine settlement type
@@ -429,7 +430,7 @@ class PositionTracker:
         if position is None:
             raise ValueError(f"Position #{position_id} not found")
 
-        now = datetime.now()
+        now = now_et()
         entry_legs = json.loads(position["legs"])
         entry_price = position["entry_price"]
         quantity = position["quantity"]
@@ -466,7 +467,7 @@ class PositionTracker:
 
         settlement_type = _determine_settlement_type(entry_legs)
 
-        opened_at = datetime.fromisoformat(position["opened_at"])
+        opened_at = parse_dt(position["opened_at"])
         holding_days = (now - opened_at).days
 
         legs_detail = json.dumps({

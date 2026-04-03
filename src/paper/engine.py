@@ -35,6 +35,7 @@ from src.paper.models import (
     SimulatedFill,
     TickResult,
 )
+from src.utils import now_et
 from src.paper.exits import ExitMonitor
 from src.paper.orders import OrderManager
 from src.paper.pnl import PnLCalculator
@@ -130,7 +131,7 @@ class PaperTradingEngine:
         Returns:
             TickResult summarizing all actions taken this tick.
         """
-        now = datetime.now()
+        now = now_et()
         self._tick_count_today += 1
 
         result = TickResult(timestamp=now)
@@ -525,8 +526,9 @@ class PaperTradingEngine:
                     transitions = await self._strategy_manager.get_transition_history(strategy_id)
                     for t in reversed(transitions):
                         if t["to_status"] == "paper":
-                            paper_start = datetime.fromisoformat(t["transitioned_at"])
-                            days_in_paper = (datetime.now() - paper_start).days
+                            from src.utils import parse_dt
+                            paper_start = parse_dt(t["transitioned_at"])
+                            days_in_paper = (now_et() - paper_start).days
                             break
             except Exception:
                 logger.warning("Failed to compute days_in_paper for strategy #%d", strategy_id, exc_info=True)

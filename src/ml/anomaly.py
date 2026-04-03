@@ -32,6 +32,7 @@ from datetime import date, datetime
 from typing import TYPE_CHECKING
 
 import numpy as np
+from src.utils import now_et
 
 if TYPE_CHECKING:
     from src.data import OptionsChain
@@ -65,7 +66,7 @@ class AnomalyReport:
     strike_clusters: list[dict] = field(default_factory=list)
     flow_anomalies: list[dict] = field(default_factory=list)
     overall_score: float = 0.0
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=lambda: now_et().isoformat())
 
 
 # ---------------------------------------------------------------------------

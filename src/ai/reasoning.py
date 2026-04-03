@@ -32,6 +32,7 @@ import anthropic
 import httpx
 
 from src.config import config
+from src.utils import now_et
 
 if TYPE_CHECKING:
     from src.ml.anomaly import AnomalyManager, FlowAnalyzer
@@ -620,7 +621,7 @@ class ReasoningManager:
         if features and features.get("computed_at"):
             try:
                 computed = datetime.fromisoformat(features["computed_at"])
-                age_hours = (datetime.now() - computed).total_seconds() / 3600
+                age_hours = (now_et() - computed).total_seconds() / 3600
                 if age_hours > 6:
                     staleness_warnings.append(
                         f"Feature store data is {age_hours:.1f} hours old"
@@ -632,7 +633,7 @@ class ReasoningManager:
         regime_state_name = regime.get("state_name", "unknown")
 
         return MarketContext(
-            timestamp=datetime.now().isoformat(),
+            timestamp=now_et().isoformat(),
             ticker=ticker,
             spot_price=spot_price,
             regime_state=regime_state_name,

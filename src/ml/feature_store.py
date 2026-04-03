@@ -21,6 +21,7 @@ from datetime import datetime
 import aiosqlite
 
 from src.db.store import Store
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class FeatureStore:
             logger.debug("No non-None features provided for %s on %s — skipping", ticker, date)
             return
 
-        computed_at = datetime.now().isoformat()
+        computed_at = now_et().isoformat()
 
         # Build INSERT columns: metadata + provided features.
         insert_cols = ["date", "ticker", "computed_at"] + list(provided.keys())

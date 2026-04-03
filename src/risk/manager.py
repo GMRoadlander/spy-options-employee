@@ -20,6 +20,7 @@ import aiosqlite
 
 from src.risk.analyzer import PortfolioAnalyzer
 from src.risk.config import REGIME_MULTIPLIERS, RiskConfig
+from src.utils import now_et
 from src.risk.models import (
     PortfolioGreeks,
     RiskAlert,
@@ -106,7 +107,7 @@ class RiskManager:
         Returns:
             RiskCheckResult with approved/rejected status and reasons.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         result = RiskCheckResult(
             regime_state=regime_state,
             regime_name=_regime_name(regime_state),
@@ -177,7 +178,7 @@ class RiskManager:
 
         # DTE check
         legs = order_info.get("legs", [])
-        today = datetime.now().date()
+        today = now_et().date()
         for leg in legs:
             expiry_str = leg.get("expiry", "")
             try:
@@ -310,7 +311,7 @@ class RiskManager:
         Returns:
             List of RiskAlert objects for any warnings or breaches.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         alerts: list[RiskAlert] = []
         cfg = self._config
         regime_mults = REGIME_MULTIPLIERS.get(regime_state, REGIME_MULTIPLIERS[0])
@@ -444,7 +445,7 @@ class RiskManager:
         Returns:
             Complete RiskSnapshot.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
 
         greeks = self._analyzer.compute_greeks(positions, spot)
         var_result = self._analyzer.compute_var(greeks, spot, predicted_vol, nav)

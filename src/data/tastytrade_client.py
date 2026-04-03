@@ -31,6 +31,7 @@ from tastytrade.instruments import get_option_chain
 from tastytrade.market_data import get_market_data_by_type
 
 from src.data import OptionContract, OptionsChain
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +288,7 @@ class TastytradeClient:
         return OptionsChain(
             ticker=ticker_upper,
             spot_price=spot_price,
-            timestamp=datetime.now(),
+            timestamp=now_et(),
             contracts=contracts,
             source="tastytrade",
         )

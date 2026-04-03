@@ -17,6 +17,7 @@ import logging
 import math
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from src.utils import now_et
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -114,7 +115,7 @@ class SignalTracker:
         days: int = 30,
     ) -> dict[str, Any]:
         """Compute accuracy stats for signals with outcomes."""
-        since = datetime.now() - timedelta(days=days)
+        since = now_et() - timedelta(days=days)
         signals = await self._logger.get_signals(
             ticker=ticker,
             signal_type=signal_type,
@@ -309,7 +310,7 @@ class LearningManager:
         self, signal_type: str, cal: BayesianCalibrator, last_signal_id: int
     ) -> None:
         """Persist calibrator state to database."""
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         state = cal.save()
         try:
             await self._db.execute(

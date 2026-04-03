@@ -26,10 +26,9 @@ from typing import Any
 
 from src.data import OptionsChain
 from src.paper.models import ExitSignal, PaperTradingConfig
+from src.utils import ET, now_et as _now_et
 
 logger = logging.getLogger(__name__)
-
-from src.utils import ET, now_et as _now_et
 
 
 def _is_third_friday(d: date) -> bool:
@@ -214,8 +213,9 @@ class ExitMonitor:
             opened_at_str = position.get("opened_at", "")
             if opened_at_str:
                 try:
-                    opened_at = datetime.fromisoformat(opened_at_str)
-                    days_held = (datetime.now() - opened_at).days
+                    from src.utils import parse_dt
+                    opened_at = parse_dt(opened_at_str)
+                    days_held = (_now_et() - opened_at).days
                     if days_held >= exit_rule.time_stop_days:
                         return ExitSignal(
                             position_id=position_id,

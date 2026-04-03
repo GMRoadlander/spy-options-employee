@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any
 
 import aiosqlite
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class SignalEvent:
 
     def __post_init__(self) -> None:
         if self.timestamp is None:
-            self.timestamp = datetime.now()
+            self.timestamp = now_et()
 
 
 class SignalLogger:
@@ -144,7 +145,7 @@ class SignalLogger:
             outcome: Outcome description ("win", "loss", "scratch", "expired").
             pnl: Optional P&L value.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
 
         await self._db.execute(
             """

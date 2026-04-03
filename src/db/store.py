@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, date
 import aiosqlite
 
 from src.config import config
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -357,7 +358,7 @@ class Store:
                 await self._db.execute(sql)
                 await self._db.execute(
                     "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
-                    (version, datetime.now().isoformat()),
+                    (version, now_et().isoformat()),
                 )
                 applied += 1
 
@@ -535,8 +536,9 @@ class Store:
             if row is None:
                 return True
 
-            cooldown_until = datetime.fromisoformat(row[0])
-            now = datetime.now()
+            from src.utils import parse_dt
+            cooldown_until = parse_dt(row[0])
+            now = now_et()
 
             if now >= cooldown_until:
                 # Cooldown expired -- clean it up
@@ -576,7 +578,7 @@ class Store:
         if minutes is None:
             minutes = config.alert_cooldown_minutes
 
-        cooldown_until = datetime.now() + timedelta(minutes=minutes)
+        cooldown_until = now_et() + timedelta(minutes=minutes)
 
         try:
             await db.execute(
@@ -606,9 +608,9 @@ class Store:
         """
         db = self._ensure_connected()
 
-        cutoff = datetime.now() - timedelta(days=config.history_retention_days)
+        cutoff = now_et() - timedelta(days=config.history_retention_days)
         cutoff_iso = cutoff.isoformat()
-        now_iso = datetime.now().isoformat()
+        now_iso = now_et().isoformat()
 
         try:
             # Delete old snapshots

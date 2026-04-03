@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from hmmlearn.hmm import GaussianHMM
+from src.utils import now_et
 
 if TYPE_CHECKING:
     from src.ml.feature_store import FeatureStore
@@ -491,7 +492,7 @@ class RegimeManager:
         detector.save(self.model_path)
 
         self._detector = detector
-        self._trained_at = datetime.now()
+        self._trained_at = now_et()
 
         # Seed rolling window (keep last _ROLLING_WINDOW observations).
         self._returns = list(returns_arr[-_ROLLING_WINDOW:])
@@ -623,7 +624,7 @@ class RegimeManager:
         if self._trained_at is None:
             return True
 
-        age = (datetime.now() - self._trained_at).days
+        age = (now_et() - self._trained_at).days
         if age >= _RETRAIN_AGE_DAYS:
             logger.info("Model is %d days old (threshold %d), retrain recommended", age, _RETRAIN_AGE_DAYS)
             return True

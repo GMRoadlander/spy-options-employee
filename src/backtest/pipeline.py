@@ -32,6 +32,7 @@ from src.backtest.metrics import StrategyMetrics, calculate_metrics
 from src.backtest.monte_carlo import MonteCarloResult, MonteCarloSimulator
 from src.backtest.wfa import WFAResult, WalkForwardAnalyzer
 from src.strategy.schema import StrategyTemplate
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ class EvaluationPipeline:
         return PipelineResult(
             strategy_name=strategy.name,
             strategy_id=strategy.metadata.get("id", ""),
-            timestamp=datetime.now(),
+            timestamp=now_et(),
             wfa=wfa,
             cpcv=cpcv,
             dsr=dsr,

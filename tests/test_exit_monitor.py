@@ -7,6 +7,8 @@ Uses in-memory SQLite and mock options chain data.
 
 import json
 from datetime import date, datetime, timedelta
+
+from src.utils import ET
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
@@ -377,18 +379,18 @@ class TestTimeStop:
             config=_make_config(),
         )
 
-        # Position opened 10 days ago
-        opened_at = (datetime.now() - timedelta(days=10)).isoformat()
+        # Position opened 10 days before mock_now (timezone-aware)
+        mock_now = datetime(2026, 4, 2, 10, 30, tzinfo=ET)
+        opened_at = (mock_now - timedelta(days=10)).isoformat()
         pos_id = await _create_position(
             db, max_profit=150.0, opened_at=opened_at,
         )
 
         chains = {"SPX": OptionsChain(
             ticker="SPX", spot_price=5950.0,
-            timestamp=datetime.now(), contracts=[],
+            timestamp=mock_now, contracts=[],
         )}
 
-        mock_now = datetime(2025, 3, 10, 10, 30, tzinfo=None)
         with patch("src.paper.exits._now_et", return_value=mock_now):
             signals = await exit_monitor.check_all_positions(chains)
 

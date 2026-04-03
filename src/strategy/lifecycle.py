@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Any
 
 import aiosqlite
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class StrategyManager:
         Returns:
             The new strategy's ID.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         meta_json = json.dumps(metadata or {})
 
         cursor = await self._db.execute(
@@ -195,7 +196,7 @@ class StrategyManager:
                 f"to {new_status.value}. Allowed: {', '.join(s.value for s in allowed) or 'none'}"
             )
 
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
 
         # Optimistic lock: only update if status hasn't changed since we read it
         cursor = await self._db.execute(
@@ -240,7 +241,7 @@ class StrategyManager:
 
         await self._db.execute(
             "UPDATE strategies SET template_yaml = ?, updated_at = ? WHERE id = ?",
-            (template_yaml, datetime.now().isoformat(), strategy_id),
+            (template_yaml, now_et().isoformat(), strategy_id),
         )
         await self._db.commit()
 
@@ -263,7 +264,7 @@ class StrategyManager:
 
         await self._db.execute(
             "UPDATE strategies SET metadata = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(existing), datetime.now().isoformat(), strategy_id),
+            (json.dumps(existing), now_et().isoformat(), strategy_id),
         )
         await self._db.commit()
 

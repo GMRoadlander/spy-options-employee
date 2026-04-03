@@ -26,6 +26,7 @@ from src.analysis.greeks import (
     black_scholes_theta,
     black_scholes_vega,
 )
+from src.utils import now_et
 from src.risk.config import RiskConfig
 from src.risk.models import (
     ConcentrationReport,
@@ -75,7 +76,7 @@ class PortfolioAnalyzer:
         Returns:
             PortfolioGreeks with raw and dollar-denominated values.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         result = PortfolioGreeks(timestamp=now)
 
         if not positions or spot <= 0:
@@ -228,7 +229,7 @@ class PortfolioAnalyzer:
         Returns:
             VaRResult with parametric and (optionally) historical VaR.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         result = VaRResult(timestamp=now, daily_vol_used=daily_vol)
 
         if spot <= 0 or daily_vol <= 0:

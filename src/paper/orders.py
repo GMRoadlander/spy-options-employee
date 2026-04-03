@@ -30,6 +30,7 @@ from src.paper.slippage import (
     OrderSide,
     SlippageModel,
 )
+from src.utils import now_et
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,7 @@ class OrderManager:
         Returns:
             The new order ID.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         legs_json = json.dumps([
             {
                 "leg_name": leg.leg_name,
@@ -335,7 +336,7 @@ class OrderManager:
                     return None
 
         # Fill the order
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         await self._db.execute(
             """
             UPDATE paper_orders
@@ -379,7 +380,7 @@ class OrderManager:
             order_id: The order to cancel.
             reason: Reason for cancellation (stored in metadata).
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         await self._db.execute(
             """
             UPDATE paper_orders
@@ -397,7 +398,7 @@ class OrderManager:
 
         Returns the number of orders expired.
         """
-        now = datetime.now().isoformat()
+        now = now_et().isoformat()
         max_age = self._config.max_order_age_ticks
 
         cursor = await self._db.execute(
