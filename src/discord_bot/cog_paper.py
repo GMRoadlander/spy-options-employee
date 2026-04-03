@@ -214,30 +214,8 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
 
     async def _get_todays_fills(self, engine: "PaperTradingEngine") -> list[dict]:
         """Get fills from today's orders."""
-        today = _now_et().date().isoformat()
         try:
-            cursor = await engine._db.execute(
-                """
-                SELECT o.id, o.strategy_id, o.direction, o.fill_price,
-                       o.slippage, o.filled_at
-                FROM paper_orders o
-                WHERE o.status = 'filled'
-                  AND o.filled_at >= ?
-                ORDER BY o.filled_at DESC
-                """,
-                (today,),
-            )
-            rows = await cursor.fetchall()
-            cols = ["id", "strategy_id", "direction", "fill_price",
-                    "slippage", "filled_at"]
-            fills = []
-            for row in rows:
-                fill = dict(zip(cols, row))
-                # Get leg fills for this order
-                leg_fills = await engine.order_manager.get_fills_for_order(fill["id"])
-                fill["legs"] = leg_fills
-                fills.append(fill)
-            return fills[:20]  # Cap at 20 most recent
+            return await engine.get_todays_fills()
         except Exception as exc:
             logger.error("Failed to get today's fills: %s", exc)
             return []
@@ -270,11 +248,10 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
         """Fetch trade history with optional strategy filter."""
         cutoff = (_now_et() - timedelta(days=days)).date().isoformat()
 
-        # Build query
+        # Resolve strategy name to ID
+        strategy_id = None
         if strategy_filter:
-            # Resolve strategy name to ID
             manager = self.services.strategy_manager
-            strategy_id = None
             if manager:
                 try:
                     strategies = await manager.list_strategies()
@@ -285,50 +262,7 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
                 except Exception:
                     pass
 
-            if strategy_id is not None:
-                cursor = await engine._db.execute(
-                    """
-                    SELECT id, strategy_id, entry_date, exit_date,
-                           holding_days, entry_price, exit_price,
-                           total_pnl, fees, slippage_cost, close_reason
-                    FROM paper_trades
-                    WHERE strategy_id = ? AND exit_date >= ?
-                    ORDER BY exit_date DESC
-                    """,
-                    (strategy_id, cutoff),
-                )
-            else:
-                cursor = await engine._db.execute(
-                    """
-                    SELECT id, strategy_id, entry_date, exit_date,
-                           holding_days, entry_price, exit_price,
-                           total_pnl, fees, slippage_cost, close_reason
-                    FROM paper_trades
-                    WHERE exit_date >= ?
-                    ORDER BY exit_date DESC
-                    """,
-                    (cutoff,),
-                )
-        else:
-            cursor = await engine._db.execute(
-                """
-                SELECT id, strategy_id, entry_date, exit_date,
-                       holding_days, entry_price, exit_price,
-                       total_pnl, fees, slippage_cost, close_reason
-                FROM paper_trades
-                WHERE exit_date >= ?
-                ORDER BY exit_date DESC
-                """,
-                (cutoff,),
-            )
-
-        rows = await cursor.fetchall()
-        cols = ["id", "strategy_id", "entry_date", "exit_date",
-                "holding_days", "entry_price", "exit_price",
-                "total_pnl", "fees", "slippage_cost", "close_reason"]
-        trades = [dict(zip(cols, row)) for row in rows]
-
-        # Enrich with strategy names
+        trades = await engine.get_trade_history(cutoff, strategy_id=strategy_id)
         trades = await self._enrich_trades(trades)
         return trades
 
@@ -338,65 +272,15 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
         status_filter: str,
     ) -> list[dict]:
         """Get recent paper orders, optionally filtered by status."""
-        if status_filter == "pending":
-            return await engine.order_manager.get_pending_orders()
-
-        cutoff = (_now_et() - timedelta(days=7)).isoformat()
-
-        if status_filter == "all":
-            cursor = await engine._db.execute(
-                """
-                SELECT id, strategy_id, order_type, direction, quantity,
-                       limit_price, status, submitted_at, filled_at,
-                       fill_price, slippage
-                FROM paper_orders
-                WHERE submitted_at >= ?
-                ORDER BY submitted_at DESC
-                LIMIT 30
-                """,
-                (cutoff,),
-            )
-        else:
-            cursor = await engine._db.execute(
-                """
-                SELECT id, strategy_id, order_type, direction, quantity,
-                       limit_price, status, submitted_at, filled_at,
-                       fill_price, slippage
-                FROM paper_orders
-                WHERE status = ? AND submitted_at >= ?
-                ORDER BY submitted_at DESC
-                LIMIT 30
-                """,
-                (status_filter, cutoff),
-            )
-
-        rows = await cursor.fetchall()
-        cols = ["id", "strategy_id", "order_type", "direction", "quantity",
-                "limit_price", "status", "submitted_at", "filled_at",
-                "fill_price", "slippage"]
-        return [dict(zip(cols, row)) for row in rows]
+        return await engine.get_recent_orders(status=status_filter)
 
     async def _get_todays_closed_trades(
         self,
         engine: "PaperTradingEngine",
     ) -> list[dict]:
         """Get trades closed today."""
-        today = _now_et().date().isoformat()
         try:
-            cursor = await engine._db.execute(
-                """
-                SELECT id, strategy_id, entry_date, exit_date, total_pnl,
-                       fees, close_reason
-                FROM paper_trades
-                WHERE exit_date = ?
-                ORDER BY id
-                """,
-                (today,),
-            )
-            rows = await cursor.fetchall()
-            cols = ["id", "strategy_id", "entry_date", "exit_date",
-                    "total_pnl", "fees", "close_reason"]
-            trades = [dict(zip(cols, row)) for row in rows]
+            trades = await engine.get_todays_closed_trades()
             return await self._enrich_trades(trades)
         except Exception as exc:
             logger.error("Failed to get today's trades: %s", exc)

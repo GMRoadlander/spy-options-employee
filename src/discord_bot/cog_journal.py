@@ -181,17 +181,7 @@ class JournalCog(commands.Cog, name="Journal"):
             )
             return
 
-        db = store._ensure_connected()
-        now = _now_et().isoformat()
-
-        await db.execute(
-            """
-            INSERT INTO signal_ratings (signal_id, rating, notes, rated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (signal_id, rating, notes, now),
-        )
-        await db.commit()
+        await store.save_signal_rating(signal_id, rating, notes)
 
         stars = "+" * rating + "-" * (5 - rating)
         from src.discord_bot.embeds import build_rating_confirmation_embed
@@ -536,17 +526,7 @@ class JournalCog(commands.Cog, name="Journal"):
             return {"count": 0, "avg_rating": 0.0}
 
         try:
-            db = store._ensure_connected()
-            cursor = await db.execute(
-                """
-                SELECT COUNT(*), COALESCE(AVG(rating), 0)
-                FROM signal_ratings
-                WHERE rated_at >= ?
-                """,
-                (since.isoformat(),),
-            )
-            row = await cursor.fetchone()
-            return {"count": row[0], "avg_rating": float(row[1])}
+            return await store.get_rating_stats_since(since)
         except Exception:
             return {"count": 0, "avg_rating": 0.0}
 
@@ -562,16 +542,7 @@ class JournalCog(commands.Cog, name="Journal"):
             return
 
         try:
-            db = store._ensure_connected()
-            now = _now_et().isoformat()
-            await db.execute(
-                """
-                INSERT INTO journal_entries (entry_type, content, author, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (entry_type, content, author, now),
-            )
-            await db.commit()
+            await store.save_journal_entry(entry_type, content, author)
         except Exception as exc:
             logger.error("Failed to save journal entry: %s", exc)
 

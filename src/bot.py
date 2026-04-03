@@ -89,10 +89,10 @@ class SpyBot(commands.Bot):
             logger.error("HistoricalStore initialization failed: %s", exc)
 
         # Initialize StrategyManager (Phase 2)
-        if self.store is not None and hasattr(self.store, "_db") and self.store._db is not None:
+        if self.store is not None and hasattr(self.store, "_db") and self.store.connection is not None:
             try:
                 from src.strategy.lifecycle import StrategyManager
-                self.strategy_manager = StrategyManager(self.store._db)
+                self.strategy_manager = StrategyManager(self.store.connection)
                 await self.strategy_manager.init_tables()
                 logger.info("StrategyManager initialized")
             except ImportError:
@@ -101,10 +101,10 @@ class SpyBot(commands.Bot):
                 logger.error("StrategyManager initialization failed: %s", exc)
 
         # Initialize SignalLogger (Phase 2)
-        if self.store is not None and hasattr(self.store, "_db") and self.store._db is not None:
+        if self.store is not None and hasattr(self.store, "_db") and self.store.connection is not None:
             try:
                 from src.db.signal_log import SignalLogger
-                self.signal_logger = SignalLogger(self.store._db)
+                self.signal_logger = SignalLogger(self.store.connection)
                 await self.signal_logger.init_table()
                 logger.info("SignalLogger initialized")
             except ImportError:
@@ -123,10 +123,10 @@ class SpyBot(commands.Bot):
             logger.error("StrategyParser initialization failed: %s", exc)
 
         # Initialize HypothesisManager (Phase 2-3)
-        if self.store is not None and hasattr(self.store, "_db") and self.store._db is not None:
+        if self.store is not None and hasattr(self.store, "_db") and self.store.connection is not None:
             try:
                 from src.strategy.hypothesis import HypothesisManager
-                self.hypothesis_manager = HypothesisManager(self.store._db)
+                self.hypothesis_manager = HypothesisManager(self.store.connection)
                 await self.hypothesis_manager.init_tables()
                 logger.info("HypothesisManager initialized")
             except ImportError:
@@ -213,7 +213,7 @@ class SpyBot(commands.Bot):
         if (
             self.store is None
             or not hasattr(self.store, "_db")
-            or self.store._db is None
+            or self.store.connection is None
         ):
             logger.warning("Paper trading skipped -- Store not available")
             return
@@ -222,7 +222,7 @@ class SpyBot(commands.Bot):
             logger.warning("Paper trading skipped -- StrategyManager not available")
             return
 
-        db = self.store._db
+        db = self.store.connection
 
         # 1. Build PaperTradingConfig from global config
         try:
@@ -422,12 +422,12 @@ class SpyBot(commands.Bot):
             self.signal_logger is not None
             and self.store is not None
             and hasattr(self.store, "_db")
-            and self.store._db is not None
+            and self.store.connection is not None
         ):
             try:
                 from src.ml.learning import LearningManager, SignalTracker
                 tracker = SignalTracker(self.signal_logger)
-                self.learning_manager = LearningManager(tracker, self.store._db)
+                self.learning_manager = LearningManager(tracker, self.store.connection)
                 logger.info("LearningManager initialized")
             except ImportError:
                 logger.warning("LearningManager module not available")

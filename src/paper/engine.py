@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import aiosqlite
@@ -711,6 +711,107 @@ class PaperTradingEngine:
         await self._db.commit()
 
         return order_id
+
+
+    # -- Public query methods (used by cogs instead of raw _db access) --------
+
+    async def get_todays_fills(self) -> list[dict]:
+        """Get fills from today's orders."""
+        today = now_et().date().isoformat()
+        cursor = await self._db.execute(
+            """
+            SELECT o.id, o.strategy_id, o.direction, o.fill_price,
+                   o.slippage, o.filled_at
+            FROM paper_orders o
+            WHERE o.status = 'filled' AND o.filled_at >= ?
+            ORDER BY o.filled_at DESC
+            """,
+            (today,),
+        )
+        rows = await cursor.fetchall()
+        cols = ["id", "strategy_id", "direction", "fill_price",
+                "slippage", "filled_at"]
+        fills = []
+        for row in rows:
+            fill = dict(zip(cols, row))
+            fill["legs"] = await self.order_manager.get_fills_for_order(fill["id"])
+            fills.append(fill)
+        return fills[:20]
+
+    async def get_trade_history(
+        self,
+        cutoff: str,
+        strategy_id: int | None = None,
+    ) -> list[dict]:
+        """Get trade history since cutoff, optionally filtered by strategy."""
+        cols = ["id", "strategy_id", "entry_date", "exit_date",
+                "holding_days", "entry_price", "exit_price",
+                "total_pnl", "fees", "slippage_cost", "close_reason"]
+        col_str = ", ".join(cols)
+
+        if strategy_id is not None:
+            cursor = await self._db.execute(
+                f"SELECT {col_str} FROM paper_trades "
+                f"WHERE strategy_id = ? AND exit_date >= ? ORDER BY exit_date DESC",
+                (strategy_id, cutoff),
+            )
+        else:
+            cursor = await self._db.execute(
+                f"SELECT {col_str} FROM paper_trades "
+                f"WHERE exit_date >= ? ORDER BY exit_date DESC",
+                (cutoff,),
+            )
+        rows = await cursor.fetchall()
+        return [dict(zip(cols, row)) for row in rows]
+
+    async def get_recent_orders(
+        self,
+        status: str | None = None,
+        cutoff: str | None = None,
+    ) -> list[dict]:
+        """Get recent orders, optionally filtered by status."""
+        if status == "pending":
+            return await self.order_manager.get_pending_orders()
+
+        cols = ["id", "strategy_id", "order_type", "direction", "quantity",
+                "limit_price", "status", "submitted_at", "filled_at",
+                "fill_price", "slippage"]
+        col_str = ", ".join(cols)
+
+        if cutoff is None:
+            cutoff = (now_et() - timedelta(days=7)).isoformat()
+
+        if status is None or status == "all":
+            cursor = await self._db.execute(
+                f"SELECT {col_str} FROM paper_orders "
+                f"WHERE submitted_at >= ? ORDER BY submitted_at DESC LIMIT 30",
+                (cutoff,),
+            )
+        else:
+            cursor = await self._db.execute(
+                f"SELECT {col_str} FROM paper_orders "
+                f"WHERE status = ? AND submitted_at >= ? "
+                f"ORDER BY submitted_at DESC LIMIT 30",
+                (status, cutoff),
+            )
+        rows = await cursor.fetchall()
+        return [dict(zip(cols, row)) for row in rows]
+
+    async def get_todays_closed_trades(self) -> list[dict]:
+        """Get trades closed today."""
+        today = now_et().date().isoformat()
+        cursor = await self._db.execute(
+            """
+            SELECT id, strategy_id, entry_date, exit_date, total_pnl,
+                   fees, close_reason
+            FROM paper_trades WHERE exit_date = ? ORDER BY id
+            """,
+            (today,),
+        )
+        rows = await cursor.fetchall()
+        cols = ["id", "strategy_id", "entry_date", "exit_date",
+                "total_pnl", "fees", "close_reason"]
+        return [dict(zip(cols, row)) for row in rows]
 
 
 def _compute_recommendation(

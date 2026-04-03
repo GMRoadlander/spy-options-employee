@@ -255,7 +255,8 @@ async def test_journal_note_saves():
     """journal_note saves the note to the database and responds with embed."""
     from src.discord_bot.cog_journal import JournalCog
 
-    store, db = _make_mock_store_with_db()
+    store = MagicMock()
+    store.save_journal_entry = AsyncMock()
 
     bot = MagicMock()
     bot.store = store
@@ -268,9 +269,8 @@ async def test_journal_note_saves():
     interaction = _make_interaction()
     await cog.journal_note.callback(cog, interaction, content="Market looks bullish today")
 
-    # Verify DB write
-    db.execute.assert_awaited()
-    db.commit.assert_awaited()
+    # Verify store method called
+    store.save_journal_entry.assert_awaited_once()
 
     # Verify embed response
     interaction.followup.send.assert_awaited_once()

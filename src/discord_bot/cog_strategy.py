@@ -410,24 +410,14 @@ class StrategyCog(commands.Cog, name="Strategy"):
             return
 
         # Query latest backtest result
-        db = store._ensure_connected()
-        cursor = await db.execute(
-            """SELECT * FROM backtest_results
-               WHERE strategy_id = ?
-               ORDER BY run_at DESC LIMIT 1""",
-            (strategy["id"],),
-        )
-        row = await cursor.fetchone()
+        result_dict = await store.get_latest_backtest_result(strategy["id"])
 
-        if row is None:
+        if result_dict is None:
             await interaction.followup.send(
                 f"No backtest results found for **{strategy['name']}**.",
                 ephemeral=True,
             )
             return
-
-        columns = [desc[0] for desc in cursor.description]
-        result_dict = dict(zip(columns, row))
 
         from src.discord_bot.embeds import build_backtest_result_embed
         embed = build_backtest_result_embed(result_dict, strategy["name"])

@@ -190,11 +190,13 @@ class TestPaperHistory(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        rows = [(i, 1, "2026-02-15", "2026-02-20", 5, 2.0, 0.5, 100.0, 5.0, 1.0, "profit_target")
-                for i in range(5)]
-        cursor = _mock_cursor_with_rows(rows)
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        trades = [
+            {"id": i, "strategy_id": 1, "entry_date": "2026-02-15", "exit_date": "2026-02-20",
+             "holding_days": 5, "entry_price": 2.0, "exit_price": 0.5,
+             "total_pnl": 100.0, "fees": 5.0, "slippage_cost": 1.0, "close_reason": "profit_target"}
+            for i in range(5)
+        ]
+        bot.paper_engine.get_trade_history = AsyncMock(return_value=trades)
         bot.strategy_manager.get = AsyncMock(return_value={"name": "Test"})
 
         await cog.paper_history.callback(cog, interaction, strategy="", days=7)
@@ -213,11 +215,13 @@ class TestPaperHistory(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        rows = [(i, 1, "2026-02-15", "2026-02-20", 5, 2.0, 0.5, 100.0, 5.0, 1.0, "profit_target")
-                for i in range(25)]
-        cursor = _mock_cursor_with_rows(rows)
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        trades = [
+            {"id": i, "strategy_id": 1, "entry_date": "2026-02-15", "exit_date": "2026-02-20",
+             "holding_days": 5, "entry_price": 2.0, "exit_price": 0.5,
+             "total_pnl": 100.0, "fees": 5.0, "slippage_cost": 1.0, "close_reason": "profit_target"}
+            for i in range(25)
+        ]
+        bot.paper_engine.get_trade_history = AsyncMock(return_value=trades)
         bot.strategy_manager.get = AsyncMock(return_value={"name": "Test"})
 
         await cog.paper_history.callback(cog, interaction, strategy="", days=30)
@@ -237,21 +241,22 @@ class TestPaperHistory(unittest.IsolatedAsyncioTestCase):
             {"id": 1, "name": "Iron Condor Weekly"},
         ])
 
-        rows = [(1, 1, "2026-02-15", "2026-02-20", 5, 2.0, 0.5, 100.0, 5.0, 1.0, "profit_target")]
-        cursor = _mock_cursor_with_rows(rows)
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        trades = [
+            {"id": 1, "strategy_id": 1, "entry_date": "2026-02-15", "exit_date": "2026-02-20",
+             "holding_days": 5, "entry_price": 2.0, "exit_price": 0.5,
+             "total_pnl": 100.0, "fees": 5.0, "slippage_cost": 1.0, "close_reason": "profit_target"}
+        ]
+        bot.paper_engine.get_trade_history = AsyncMock(return_value=trades)
         bot.strategy_manager.get = AsyncMock(return_value={"name": "Iron Condor Weekly"})
 
         await cog.paper_history.callback(
             cog, interaction, strategy="Iron Condor Weekly", days=7,
         )
 
-        # Verify SQL used strategy_id filter
-        execute_calls = bot.paper_engine._db.execute.call_args_list
-        self.assertTrue(len(execute_calls) > 0)
-        sql = execute_calls[0].args[0]
-        self.assertIn("strategy_id", sql)
+        # Verify get_trade_history called with strategy_id
+        bot.paper_engine.get_trade_history.assert_awaited_once()
+        call_kwargs = bot.paper_engine.get_trade_history.call_args
+        self.assertEqual(call_kwargs.kwargs.get("strategy_id"), 1)
 
     async def test_paper_history_days_clamped(self):
         """paper_history clamps days to 1-90 range."""
@@ -259,9 +264,7 @@ class TestPaperHistory(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        cursor = _mock_cursor_with_rows([])
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        bot.paper_engine.get_trade_history = AsyncMock(return_value=[])
 
         # days=0 should be clamped to 1
         await cog.paper_history.callback(cog, interaction, strategy="", days=0)
@@ -274,9 +277,7 @@ class TestPaperHistory(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        cursor = _mock_cursor_with_rows([])
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        bot.paper_engine.get_trade_history = AsyncMock(return_value=[])
 
         await cog.paper_history.callback(cog, interaction, strategy="", days=7)
 
@@ -382,14 +383,14 @@ class TestPaperOrders(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        rows = [
-            (i, 1, "market", "open", 1, None, "filled",
-             "2026-02-24 10:00:00", "2026-02-24 10:01:00", 2.0, 0.005)
+        orders = [
+            {"id": i, "strategy_id": 1, "order_type": "market", "direction": "open",
+             "quantity": 1, "limit_price": None, "status": "filled",
+             "submitted_at": "2026-02-24 10:00:00", "filled_at": "2026-02-24 10:01:00",
+             "fill_price": 2.0, "slippage": 0.005}
             for i in range(5)
         ]
-        cursor = _mock_cursor_with_rows(rows)
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        bot.paper_engine.get_recent_orders = AsyncMock(return_value=orders)
 
         await cog.paper_orders.callback(cog, interaction, status="all")
 
@@ -403,7 +404,7 @@ class TestPaperOrders(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        bot.paper_engine.order_manager.get_pending_orders = AsyncMock(return_value=[
+        bot.paper_engine.get_recent_orders = AsyncMock(return_value=[
             {"id": 1, "strategy_id": 1, "order_type": "limit", "direction": "open",
              "quantity": 1, "limit_price": 2.0, "status": "pending",
              "submitted_at": "2026-02-24 10:00:00", "filled_at": None,
@@ -412,7 +413,7 @@ class TestPaperOrders(unittest.IsolatedAsyncioTestCase):
 
         await cog.paper_orders.callback(cog, interaction, status="pending")
 
-        bot.paper_engine.order_manager.get_pending_orders.assert_awaited_once()
+        bot.paper_engine.get_recent_orders.assert_awaited_once()
         call_kwargs = interaction.followup.send.call_args.kwargs
         embed = call_kwargs["embed"]
         self.assertIn("1 orders", embed.description)
@@ -423,9 +424,7 @@ class TestPaperOrders(unittest.IsolatedAsyncioTestCase):
         cog = _make_cog(bot)
         interaction = _make_interaction()
 
-        cursor = _mock_cursor_with_rows([])
-        bot.paper_engine._db = AsyncMock()
-        bot.paper_engine._db.execute = AsyncMock(return_value=cursor)
+        bot.paper_engine.get_recent_orders = AsyncMock(return_value=[])
 
         await cog.paper_orders.callback(cog, interaction, status="all")
 

@@ -376,6 +376,14 @@ class Store:
             self._db = None
             logger.info("Database connection closed")
 
+    @property
+    def connection(self) -> aiosqlite.Connection:
+        """Public access to the active database connection.
+
+        Use this instead of accessing _db directly from outside the class.
+        """
+        return self._ensure_connected()
+
     def _ensure_connected(self) -> aiosqlite.Connection:
         """Return the active database connection or raise.
 
@@ -599,6 +607,57 @@ class Store:
 
         except aiosqlite.Error as exc:
             logger.error("Database error setting cooldown for %s: %s", alert_type, exc)
+
+    # -- Public query methods (used by cogs instead of raw _db access) --------
+
+    async def save_signal_rating(
+        self, signal_id: int, rating: int, notes: str,
+    ) -> None:
+        """Save a signal rating to the database."""
+        db = self._ensure_connected()
+        await db.execute(
+            "INSERT INTO signal_ratings (signal_id, rating, notes, rated_at) "
+            "VALUES (?, ?, ?, ?)",
+            (signal_id, rating, notes, now_et().isoformat()),
+        )
+        await db.commit()
+
+    async def get_rating_stats_since(self, since: datetime) -> dict:
+        """Get signal rating count and average since a given time."""
+        db = self._ensure_connected()
+        cursor = await db.execute(
+            "SELECT COUNT(*), COALESCE(AVG(rating), 0) "
+            "FROM signal_ratings WHERE rated_at >= ?",
+            (since.isoformat(),),
+        )
+        row = await cursor.fetchone()
+        return {"count": row[0], "avg_rating": float(row[1])}
+
+    async def save_journal_entry(
+        self, entry_type: str, content: str, author: str = "system",
+    ) -> None:
+        """Save a journal entry to the database."""
+        db = self._ensure_connected()
+        await db.execute(
+            "INSERT INTO journal_entries (entry_type, content, author, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (entry_type, content, author, now_et().isoformat()),
+        )
+        await db.commit()
+
+    async def get_latest_backtest_result(self, strategy_id: int) -> dict | None:
+        """Get the most recent backtest result for a strategy."""
+        db = self._ensure_connected()
+        cursor = await db.execute(
+            "SELECT * FROM backtest_results "
+            "WHERE strategy_id = ? ORDER BY run_at DESC LIMIT 1",
+            (strategy_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cursor.description]
+        return dict(zip(columns, row))
 
     async def cleanup_old(self) -> None:
         """Delete snapshots older than config.history_retention_days.
