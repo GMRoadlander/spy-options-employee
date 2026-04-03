@@ -7,6 +7,7 @@ Strategy:
   4. Cache results with configurable TTL to avoid hammering APIs
 """
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -303,21 +304,27 @@ class DataManager:
             return None
 
     async def get_all_chains(self) -> dict[str, OptionsChain]:
-        """Fetch options chains for all configured tickers.
+        """Fetch options chains for all configured tickers concurrently.
 
         Returns:
             Dict mapping ticker to OptionsChain. Only includes tickers
             where data was successfully retrieved.
         """
-        results: dict[str, OptionsChain] = {}
+        tickers = config.tickers
+        chains = await asyncio.gather(
+            *(self.get_chain(t) for t in tickers),
+            return_exceptions=True,
+        )
 
-        for ticker in config.tickers:
-            chain = await self.get_chain(ticker)
-            if chain is not None:
+        results: dict[str, OptionsChain] = {}
+        for ticker, chain in zip(tickers, chains):
+            if isinstance(chain, Exception):
+                logger.error("DataManager: exception fetching %s — %s", ticker, chain)
+            elif chain is not None:
                 results[ticker] = chain
 
         fetched = list(results.keys())
-        missed = [t for t in config.tickers if t not in results]
+        missed = [t for t in tickers if t not in results]
 
         if fetched:
             logger.info("DataManager: fetched chains for %s", fetched)

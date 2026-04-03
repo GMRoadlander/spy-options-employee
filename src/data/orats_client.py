@@ -144,7 +144,8 @@ class ORATSClient:
 
         logger.debug("ORATS request: GET %s params=%s", endpoint, {k: v for k, v in query_params.items() if k != "token"})
 
-        async with session.get(url, params=query_params) as resp:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with session.get(url, params=query_params, timeout=timeout) as resp:
             self._record_request()
 
             if resp.status == 429:

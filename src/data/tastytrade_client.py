@@ -69,7 +69,12 @@ class TastytradeClient:
         self._session = None  # Lazy init
 
     async def _get_session(self):
-        """Lazily create and return the tastytrade Session."""
+        """Lazily create and return the tastytrade Session.
+
+        If session creation fails, the cached session remains None so the
+        next call will retry.  Auth-related errors during fetch_chain()
+        invalidate the session so a fresh one is created on the next attempt.
+        """
         if self._session is None:
             logger.info(
                 "Tastytrade: creating session (sandbox=%s)", self._is_sandbox
@@ -80,6 +85,11 @@ class TastytradeClient:
                 is_test=self._is_sandbox,
             )
         return self._session
+
+    def _invalidate_session(self) -> None:
+        """Clear the cached session so it is recreated on next use."""
+        self._session = None
+        logger.warning("Tastytrade: session invalidated, will re-authenticate on next call")
 
     async def close(self) -> None:
         """Close the underlying session."""
@@ -112,6 +122,9 @@ class TastytradeClient:
         try:
             chain_map = await get_option_chain(session, ticker_upper)
         except Exception as exc:
+            err_str = str(exc).lower()
+            if "401" in err_str or "auth" in err_str or "token" in err_str:
+                self._invalidate_session()
             logger.error(
                 "Tastytrade: failed to get chain for %s — %s", ticker_upper, exc
             )

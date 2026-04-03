@@ -347,6 +347,15 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
                 except Exception as exc:
                     logger.error("Paper alert check failed: %s", exc, exc_info=True)
 
+            # Recurring database cleanup (don't rely solely on shutdown)
+            store = getattr(self.bot, "store", None)
+            if store is not None:
+                try:
+                    await store.cleanup_old()
+                    logger.info("Post-market: database cleanup complete")
+                except Exception as exc:
+                    logger.error("Post-market: database cleanup failed: %s", exc, exc_info=True)
+
     # -- ML daily update pipeline (Phase 3) ------------------------------------
 
     async def _handle_ml_daily_update(self) -> None:
