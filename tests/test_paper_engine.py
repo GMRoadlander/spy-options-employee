@@ -30,8 +30,9 @@ def _make_config(**overrides) -> PaperTradingConfig:
     return PaperTradingConfig(**defaults)
 
 
-# Use a future expiry so exit monitor does not auto-close positions as expired
-_FUTURE_EXPIRY = date.today() + timedelta(days=30)
+def _future_expiry() -> date:
+    """Compute a future expiry per-call to avoid midnight flakiness."""
+    return date.today() + timedelta(days=30)
 
 
 def _make_contract(
@@ -43,7 +44,7 @@ def _make_contract(
 ) -> OptionContract:
     return OptionContract(
         ticker="SPX",
-        expiry=expiry or _FUTURE_EXPIRY,
+        expiry=expiry or _future_expiry(),
         strike=strike,
         option_type=option_type,
         bid=bid,
@@ -70,8 +71,8 @@ def _make_chain():
 
 def _make_legs():
     return [
-        LegSpec("short_put", "put", 5800.0, _FUTURE_EXPIRY, "sell"),
-        LegSpec("long_put", "put", 5750.0, _FUTURE_EXPIRY, "buy"),
+        LegSpec("short_put", "put", 5800.0, _future_expiry(), "sell"),
+        LegSpec("long_put", "put", 5750.0, _future_expiry(), "buy"),
     ]
 
 
@@ -183,7 +184,7 @@ class TestPaperTradingEngine:
     async def test_tick_expires_stale_orders(self, engine):
         """Tick should expire orders that are too old."""
         # Submit an order with a strike that won't match
-        legs = [LegSpec("test", "put", 9999.0, _FUTURE_EXPIRY, "sell")]
+        legs = [LegSpec("test", "put", 9999.0, _future_expiry(), "sell")]
         order_id = await engine.order_manager.submit_order(
             strategy_id=1, direction="open", legs=legs,
             quantity=1, order_type="market",
@@ -374,7 +375,7 @@ class TestPaperTradingEngine:
 
         # Settlement today should not affect positions expiring in the future
         closed = await engine.handle_eod_settlement()
-        # Our test expiry is 30 days from now (via _FUTURE_EXPIRY)
+        # Our test expiry is 30 days from now (via _future_expiry)
         assert isinstance(closed, list)
 
 

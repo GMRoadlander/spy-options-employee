@@ -18,7 +18,9 @@ from src.risk.schema import init_risk_tables
 
 SPOT = 5000.0
 NAV = 100_000.0
-EXPIRY_30D = (date.today() + timedelta(days=30)).isoformat()
+def _expiry_30d() -> str:
+    """Compute a 30-day future expiry per-call to avoid midnight flakiness."""
+    return (date.today() + timedelta(days=30)).isoformat()
 
 
 def _make_order_info(
@@ -34,7 +36,7 @@ def _make_order_info(
                 "leg_name": "long_call",
                 "option_type": "call",
                 "strike": 5000.0,
-                "expiry": EXPIRY_30D,
+                "expiry": _expiry_30d(),
                 "action": "buy",
                 "quantity": 1,
             }
@@ -64,7 +66,7 @@ def _make_position(
                 "leg_name": "long_call",
                 "option_type": "call",
                 "strike": 5000.0,
-                "expiry": EXPIRY_30D,
+                "expiry": _expiry_30d(),
                 "action": "buy",
                 "quantity": 1,
                 "iv": 0.20,
@@ -198,16 +200,61 @@ class TestMonitorPortfolio:
 
     @pytest.mark.asyncio
     async def test_monitor_delta_warning(self, manager):
-        """Delta at 85% of limit -> warning."""
-        # Use positions that produce high delta
-        # Manually set cached Greeks for the check
+        """Delta at 85% of limit -> warning alert."""
+        # Mock compute_greeks to return delta at 85% of max (500 * 0.85 = 425)
+        mock_greeks = PortfolioGreeks(
+            timestamp="2026-01-01T00:00:00",
+            delta=425.0,
+            gamma=0.5,
+            theta=-10.0,
+            vega=50.0,
+        )
+        manager._analyzer.compute_greeks = lambda positions, spot: mock_greeks
+
         positions = [_make_position(quantity=5)]
         alerts = await manager.monitor_portfolio(positions, SPOT, NAV)
-        # Check if any delta warnings were generated
+
         delta_alerts = [a for a in alerts if a.category == "delta"]
-        # May or may not produce warning depending on actual Greeks value
-        # Just verify no errors
-        assert isinstance(alerts, list)
+        assert len(delta_alerts) == 1
+        assert delta_alerts[0].level == "warning"
+        assert delta_alerts[0].utilization_pct == 85.0
+
+    @pytest.mark.asyncio
+    async def test_monitor_delta_breach(self, manager):
+        """Delta over 100% of limit -> breach alert."""
+        mock_greeks = PortfolioGreeks(
+            timestamp="2026-01-01T00:00:00",
+            delta=550.0,
+            gamma=0.5,
+            theta=-10.0,
+            vega=50.0,
+        )
+        manager._analyzer.compute_greeks = lambda positions, spot: mock_greeks
+
+        positions = [_make_position(quantity=5)]
+        alerts = await manager.monitor_portfolio(positions, SPOT, NAV)
+
+        delta_alerts = [a for a in alerts if a.category == "delta"]
+        assert len(delta_alerts) == 1
+        assert delta_alerts[0].level == "breach"
+
+    @pytest.mark.asyncio
+    async def test_monitor_delta_under_80pct_no_alert(self, manager):
+        """Delta under 80% of limit -> no alert."""
+        mock_greeks = PortfolioGreeks(
+            timestamp="2026-01-01T00:00:00",
+            delta=350.0,
+            gamma=0.5,
+            theta=-10.0,
+            vega=50.0,
+        )
+        manager._analyzer.compute_greeks = lambda positions, spot: mock_greeks
+
+        positions = [_make_position(quantity=5)]
+        alerts = await manager.monitor_portfolio(positions, SPOT, NAV)
+
+        delta_alerts = [a for a in alerts if a.category == "delta"]
+        assert len(delta_alerts) == 0
 
     @pytest.mark.asyncio
     async def test_monitor_daily_loss_circuit_breaker(self, manager):
