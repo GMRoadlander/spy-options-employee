@@ -10,12 +10,15 @@ and time patches for deterministic behavior.
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("tastytrade", reason="tastytrade SDK not installed")
+
 import json
 from datetime import date, datetime, time, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiosqlite
-import pytest
 import pytest_asyncio
 
 from src.data import OptionContract, OptionsChain

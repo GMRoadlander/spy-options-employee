@@ -756,7 +756,7 @@ class TestVolManagerEndToEnd:
     async def test_model_path_property(self) -> None:
         store = _make_mock_feature_store()
         mgr = VolManager(store, "/some/dir", lookback=20)
-        assert mgr.model_path == "/some/dir/vol_model.pt"
+        assert mgr.model_path == os.path.join("/some/dir", "vol_model.pt")
 
     @pytest.mark.asyncio
     async def test_update_fills_buffer_gradually(self) -> None:
