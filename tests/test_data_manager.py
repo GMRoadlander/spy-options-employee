@@ -18,6 +18,7 @@ import pytest_asyncio
 
 from src.data import OptionContract, OptionsChain
 from src.data.data_manager import DataManager
+from src.utils import now_et
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +55,7 @@ def _make_chain(
     chain = OptionsChain(
         ticker="SPX",
         spot_price=5000.0,
+        timestamp=now_et(),
         contracts=contracts,
         source=source,
     )
@@ -195,7 +197,8 @@ class TestQualityChecks:
     async def test_empty_chain_skipped(self, dm):
         """A chain with empty contracts list is treated as failure."""
         empty_chain = OptionsChain(
-            ticker="SPX", spot_price=5000.0, contracts=[], source="tastytrade"
+            ticker="SPX", spot_price=5000.0, timestamp=now_et(),
+            contracts=[], source="tastytrade",
         )
         dm._tastytrade.fetch_chain = AsyncMock(return_value=empty_chain)
         dm._cboe.fetch_chain = AsyncMock(return_value=None)

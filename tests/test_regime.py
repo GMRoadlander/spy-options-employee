@@ -468,8 +468,9 @@ class TestRegimeManagerShouldRetrain:
             mgr = RegimeManager(store, tmpdir)
             await mgr.initialize(returns.tolist(), vix.tolist())
 
-            # Fake an old training date.
-            mgr._trained_at = datetime.now() - timedelta(days=31)
+            # Fake an old training date (timezone-aware to match now_et).
+            from src.utils import now_et
+            mgr._trained_at = now_et() - timedelta(days=31)
             assert await mgr.should_retrain() is True
 
     @pytest.mark.asyncio

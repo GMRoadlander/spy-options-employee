@@ -283,6 +283,7 @@ class TestBotInitialization:
         bot = SpyBot()
         bot.store = MagicMock()
         bot.store._db = db
+        bot.store.connection = db
         bot.strategy_manager = strategy_manager
         bot.signal_logger = None
         await bot._init_paper_trading()
@@ -315,6 +316,7 @@ class TestBotInitialization:
         bot = SpyBot()
         bot.store = MagicMock()
         bot.store._db = db
+        bot.store.connection = db
         bot.strategy_manager = strategy_manager
         bot.signal_logger = None
         await bot._init_paper_trading()
