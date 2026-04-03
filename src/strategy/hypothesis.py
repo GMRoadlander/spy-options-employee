@@ -126,7 +126,7 @@ class HypothesisManager:
         Returns:
             The created Hypothesis.
         """
-        hyp_id = str(uuid.uuid4())[:8]
+        hyp_id = uuid.uuid4().hex[:12]
         now = datetime.now()
 
         if null_hypothesis is None:
@@ -242,17 +242,26 @@ class HypothesisManager:
             )
 
         rows = await cursor.fetchall()
+        if not rows:
+            return []
+
+        # W6: Batch-fetch all strategy links in one query to fix N+1
+        all_ids = [row[0] for row in rows]
+        placeholders = ",".join("?" for _ in all_ids)
+        link_cursor = await self._db.execute(
+            f"SELECT hypothesis_id, strategy_id FROM hypothesis_strategies "
+            f"WHERE hypothesis_id IN ({placeholders})",
+            all_ids,
+        )
+        link_rows = await link_cursor.fetchall()
+
+        # Build lookup: hypothesis_id -> list of strategy_ids
+        links: dict[str, list[str]] = {}
+        for hyp_id, strat_id in link_rows:
+            links.setdefault(hyp_id, []).append(strat_id)
+
         hypotheses = []
-
         for row in rows:
-            # Get linked strategies
-            s_cursor = await self._db.execute(
-                "SELECT strategy_id FROM hypothesis_strategies WHERE hypothesis_id = ?",
-                (row[0],),
-            )
-            s_rows = await s_cursor.fetchall()
-            strategy_ids = [r[0] for r in s_rows]
-
             hypotheses.append(Hypothesis(
                 id=row[0],
                 title=row[1],
@@ -262,7 +271,7 @@ class HypothesisManager:
                 status=HypothesisStatus(row[5]),
                 proposed_by=row[6],
                 proposed_at=datetime.fromisoformat(row[7]),
-                strategy_ids=strategy_ids,
+                strategy_ids=links.get(row[0], []),
                 test_result=row[8],
                 p_value=row[9],
                 tested_at=datetime.fromisoformat(row[10]) if row[10] else None,
@@ -311,7 +320,7 @@ class HypothesisManager:
     async def test(
         self,
         hypothesis_id: str,
-        pipeline_result: Any,
+        pipeline_result: "PipelineResult",
     ) -> Hypothesis:
         """Evaluate a hypothesis based on pipeline results.
 
@@ -328,6 +337,8 @@ class HypothesisManager:
         Raises:
             ValueError: If hypothesis not found.
         """
+        from src.backtest.pipeline import PipelineResult  # noqa: F811
+
         hyp = await self.get(hypothesis_id)
         if hyp is None:
             raise ValueError(f"Hypothesis {hypothesis_id} not found")
@@ -335,10 +346,10 @@ class HypothesisManager:
         # Determine outcome from pipeline result
         now = datetime.now()
 
-        # Extract metrics from pipeline result
-        recommendation = getattr(pipeline_result, "recommendation", "REJECT")
-        sharpe = getattr(getattr(pipeline_result, "metrics", None), "sharpe_ratio", 0.0)
-        dsr_value = getattr(getattr(pipeline_result, "dsr", None), "dsr", 0.0)
+        # Extract metrics from typed PipelineResult (W5: no getattr chains)
+        recommendation = pipeline_result.recommendation
+        sharpe = pipeline_result.metrics.sharpe_ratio
+        dsr_value = pipeline_result.dsr.dsr
 
         # Use DSR as a proxy for p-value (1 - DSR = probability of chance)
         p_value = max(0.0, 1.0 - dsr_value)

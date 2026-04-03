@@ -138,14 +138,13 @@ class TestTransitions:
 
     @pytest.mark.asyncio
     async def test_full_lifecycle(self, manager):
-        """Walk through the full happy path: IDEA -> DEFINED -> BACKTEST -> PAPER -> LIVE -> RETIRED."""
+        """Walk through the full happy path: IDEA -> DEFINED -> BACKTEST -> PAPER -> RETIRED."""
         sid = await manager.create("Full Lifecycle")
 
         transitions = [
             (StrategyStatus.DEFINED, "Template written"),
             (StrategyStatus.BACKTEST, "Running backtest"),
             (StrategyStatus.PAPER, "Backtest passed"),
-            (StrategyStatus.LIVE, "Paper validated"),
             (StrategyStatus.RETIRED, "Seasonal end"),
         ]
 
@@ -156,14 +155,14 @@ class TestTransitions:
         assert strategy["status"] == "retired"
 
         history = await manager.get_transition_history(sid)
-        assert len(history) == 5
+        assert len(history) == 4
 
     @pytest.mark.asyncio
     async def test_invalid_transition_raises(self, manager):
-        """IDEA -> LIVE is not valid and raises."""
+        """IDEA -> PAPER is not valid and raises."""
         sid = await manager.create("Test")
         with pytest.raises(InvalidTransitionError, match="Cannot transition"):
-            await manager.transition(sid, StrategyStatus.LIVE)
+            await manager.transition(sid, StrategyStatus.PAPER)
 
     @pytest.mark.asyncio
     async def test_retired_is_terminal(self, manager):
@@ -191,12 +190,6 @@ class TestTransitions:
                 await manager.transition(sid, StrategyStatus.DEFINED)
                 await manager.transition(sid, StrategyStatus.BACKTEST)
                 await manager.transition(sid, StrategyStatus.PAPER)
-            elif from_status == StrategyStatus.LIVE:
-                await manager.transition(sid, StrategyStatus.DEFINED)
-                await manager.transition(sid, StrategyStatus.BACKTEST)
-                await manager.transition(sid, StrategyStatus.PAPER)
-                await manager.transition(sid, StrategyStatus.LIVE)
-
             await manager.transition(sid, StrategyStatus.RETIRED)
             strategy = await manager.get(sid)
             assert strategy["status"] == "retired"

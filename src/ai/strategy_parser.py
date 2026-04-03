@@ -8,10 +8,12 @@ Also supports iterative refinement: Borey can say "make the delta range
 tighter" and the parser will modify the existing template accordingly.
 """
 
+import asyncio
 import logging
 from typing import Any
 
 import anthropic
+import httpx
 import yaml
 
 from src.config import config
@@ -104,6 +106,9 @@ class StrategyParser:
         model: Claude model to use. Defaults to config.claude_model.
     """
 
+    _MAX_RETRIES = 2
+    _RETRY_DELAY = 1.0  # seconds
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -112,6 +117,65 @@ class StrategyParser:
         self._api_key = api_key or config.claude_api_key
         self._model = model or config.claude_model
         self._loader = StrategyLoader()
+        self._client: anthropic.AsyncAnthropic | None = None
+
+    @property
+    def client(self) -> anthropic.AsyncAnthropic:
+        """Lazy-initialized, reusable AsyncAnthropic client (W9)."""
+        if self._client is None:
+            self._client = anthropic.AsyncAnthropic(
+                api_key=self._api_key,
+                timeout=httpx.Timeout(60.0, connect=10.0),  # W3
+            )
+        return self._client
+
+    async def _call_with_retry(
+        self,
+        system: str,
+        user_content: str,
+    ) -> str:
+        """Call Claude API with retry for transient errors (W10).
+
+        Args:
+            system: System prompt.
+            user_content: User message content.
+
+        Returns:
+            Response text from Claude.
+
+        Raises:
+            StrategyParseError: After all retries exhausted.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1 + self._MAX_RETRIES):
+            try:
+                message = await self.client.messages.create(
+                    model=self._model,
+                    max_tokens=2048,
+                    system=system,
+                    messages=[
+                        {"role": "user", "content": user_content},
+                    ],
+                )
+                response_text = ""
+                for block in message.content:
+                    if block.type == "text":
+                        response_text += block.text
+                return response_text.strip()
+            except anthropic.RateLimitError as exc:
+                last_exc = exc
+                if attempt < self._MAX_RETRIES:
+                    logger.warning("Rate limited, retrying in %.1fs (attempt %d)", self._RETRY_DELAY, attempt + 1)
+                    await asyncio.sleep(self._RETRY_DELAY * (attempt + 1))
+            except (anthropic.APIConnectionError, anthropic.InternalServerError) as exc:
+                last_exc = exc
+                if attempt < self._MAX_RETRIES:
+                    logger.warning("Transient API error, retrying: %s", exc)
+                    await asyncio.sleep(self._RETRY_DELAY)
+            except anthropic.APIError as exc:
+                raise StrategyParseError(f"Claude API error: {exc}") from exc
+
+        raise StrategyParseError(f"Claude API error after {self._MAX_RETRIES + 1} attempts: {last_exc}") from last_exc
 
     async def parse(self, description: str) -> tuple[StrategyTemplate, str]:
         """Parse natural language strategy description into StrategyTemplate.
@@ -131,27 +195,10 @@ class StrategyParser:
         if not self._api_key:
             raise StrategyParseError("Claude API key not configured")
 
-        try:
-            client = anthropic.AsyncAnthropic(api_key=self._api_key)
-
-            message = await client.messages.create(
-                model=self._model,
-                max_tokens=2048,
-                system=SYSTEM_PROMPT,
-                messages=[
-                    {"role": "user", "content": description},
-                ],
-            )
-
-            response_text = ""
-            for block in message.content:
-                if block.type == "text":
-                    response_text += block.text
-
-            return self._parse_response(response_text.strip())
-
-        except anthropic.APIError as exc:
-            raise StrategyParseError(f"Claude API error: {exc}") from exc
+        # W4: Wrap user input in XML delimiters
+        user_content = f"<strategy_description>{description}</strategy_description>"
+        response_text = await self._call_with_retry(SYSTEM_PROMPT, user_content)
+        return self._parse_response(response_text)
 
     async def refine(
         self,
@@ -180,33 +227,13 @@ class StrategyParser:
             sort_keys=False,
         )
 
-        try:
-            client = anthropic.AsyncAnthropic(api_key=self._api_key)
-
-            message = await client.messages.create(
-                model=self._model,
-                max_tokens=2048,
-                system=REFINE_SYSTEM_PROMPT,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Current strategy YAML:\n```\n{current_yaml}```\n\n"
-                            f"Modification requested: {feedback}"
-                        ),
-                    },
-                ],
-            )
-
-            response_text = ""
-            for block in message.content:
-                if block.type == "text":
-                    response_text += block.text
-
-            return self._parse_response(response_text.strip())
-
-        except anthropic.APIError as exc:
-            raise StrategyParseError(f"Claude API error: {exc}") from exc
+        # W4: Wrap user input in XML delimiters
+        user_content = (
+            f"Current strategy YAML:\n```\n{current_yaml}```\n\n"
+            f"Modification requested: <user_feedback>{feedback}</user_feedback>"
+        )
+        response_text = await self._call_with_retry(REFINE_SYSTEM_PROMPT, user_content)
+        return self._parse_response(response_text)
 
     def _parse_response(self, response_text: str) -> tuple[StrategyTemplate, str]:
         """Parse Claude's response into a StrategyTemplate and explanation.

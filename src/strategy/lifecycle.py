@@ -1,11 +1,11 @@
 """Strategy lifecycle state machine with SQLite persistence.
 
-Manages strategy states from IDEA through LIVE to RETIRED, enforcing
+Manages strategy states from IDEA through PAPER to RETIRED, enforcing
 valid transitions and recording transition history. Backed by the
 shared Store's SQLite database.
 
 State machine:
-    IDEA -> DEFINED -> BACKTEST -> PAPER -> LIVE -> RETIRED
+    IDEA -> DEFINED -> BACKTEST -> PAPER -> RETIRED
     (Any state can transition directly to RETIRED)
 
 Tables (added to Store.init()):
@@ -31,7 +31,6 @@ class StrategyStatus(str, Enum):
     DEFINED = "defined"
     BACKTEST = "backtest"
     PAPER = "paper"
-    LIVE = "live"
     RETIRED = "retired"
 
 
@@ -40,8 +39,7 @@ VALID_TRANSITIONS: dict[StrategyStatus, set[StrategyStatus]] = {
     StrategyStatus.IDEA: {StrategyStatus.DEFINED, StrategyStatus.RETIRED},
     StrategyStatus.DEFINED: {StrategyStatus.BACKTEST, StrategyStatus.RETIRED},
     StrategyStatus.BACKTEST: {StrategyStatus.PAPER, StrategyStatus.DEFINED, StrategyStatus.RETIRED},
-    StrategyStatus.PAPER: {StrategyStatus.LIVE, StrategyStatus.BACKTEST, StrategyStatus.RETIRED},
-    StrategyStatus.LIVE: {StrategyStatus.PAPER, StrategyStatus.RETIRED},
+    StrategyStatus.PAPER: {StrategyStatus.BACKTEST, StrategyStatus.RETIRED},
     StrategyStatus.RETIRED: set(),  # terminal state
 }
 
@@ -220,6 +218,26 @@ class StrategyManager:
             "Strategy #%d '%s': %s -> %s (reason: %s)",
             strategy_id, strategy["name"], current_status.value, new_status.value, reason,
         )
+
+    async def update_template(self, strategy_id: int, template_yaml: str) -> None:
+        """Update a strategy's template YAML.
+
+        Args:
+            strategy_id: The strategy ID.
+            template_yaml: New YAML string for the template.
+
+        Raises:
+            StrategyNotFoundError: If the strategy doesn't exist.
+        """
+        strategy = await self.get(strategy_id)
+        if strategy is None:
+            raise StrategyNotFoundError(f"Strategy #{strategy_id} not found")
+
+        await self._db.execute(
+            "UPDATE strategies SET template_yaml = ?, updated_at = ? WHERE id = ?",
+            (template_yaml, datetime.now().isoformat(), strategy_id),
+        )
+        await self._db.commit()
 
     async def update_metadata(self, strategy_id: int, metadata: dict[str, Any]) -> None:
         """Update strategy metadata (merge with existing).

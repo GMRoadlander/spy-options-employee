@@ -44,7 +44,7 @@ async def test_create_hypothesis(manager):
     assert hyp.title == "SPX IV is chronically overpriced"
     assert hyp.status == HypothesisStatus.PROPOSED
     assert hyp.proposed_by == "borey"
-    assert len(hyp.id) == 8
+    assert len(hyp.id) == 12
 
 
 @pytest.mark.asyncio
