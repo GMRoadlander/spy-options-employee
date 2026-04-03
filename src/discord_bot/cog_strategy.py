@@ -415,7 +415,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
             """SELECT * FROM backtest_results
                WHERE strategy_id = ?
                ORDER BY run_at DESC LIMIT 1""",
-            (str(strategy["id"]),),
+            (strategy["id"],),
         )
         row = await cursor.fetchone()
 

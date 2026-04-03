@@ -85,7 +85,7 @@ async def test_indexes_created(db):
         "idx_paper_positions_strategy",
         "idx_paper_positions_open",
         "idx_paper_trades_strategy",
-        "idx_paper_portfolio_date",
+        # paper_portfolio.snapshot_date UNIQUE constraint creates an implicit index
     }
     assert expected.issubset(indexes)
 

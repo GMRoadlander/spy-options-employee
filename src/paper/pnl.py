@@ -178,14 +178,10 @@ class PnLCalculator:
         else:
             max_drawdown = 0.0
 
-        # Upsert today's snapshot (replace if already exists for today)
-        await self._db.execute(
-            "DELETE FROM paper_portfolio WHERE snapshot_date = ?",
-            (today,),
-        )
+        # Atomic upsert via UNIQUE constraint on snapshot_date
         await self._db.execute(
             """
-            INSERT INTO paper_portfolio
+            INSERT OR REPLACE INTO paper_portfolio
                 (snapshot_date, starting_capital, realized_pnl, unrealized_pnl,
                  total_equity, open_positions, total_trades, daily_pnl, max_drawdown)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

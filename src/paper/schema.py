@@ -141,7 +141,7 @@ PAPER_TRADES_INDEXES = [
 PAPER_PORTFOLIO_SQL = """
 CREATE TABLE IF NOT EXISTS paper_portfolio (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    snapshot_date TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL UNIQUE,
     starting_capital REAL NOT NULL,
     realized_pnl REAL NOT NULL DEFAULT 0.0,
     unrealized_pnl REAL NOT NULL DEFAULT 0.0,
@@ -155,10 +155,7 @@ CREATE TABLE IF NOT EXISTS paper_portfolio (
 """
 
 PAPER_PORTFOLIO_INDEXES = [
-    """
-    CREATE INDEX IF NOT EXISTS idx_paper_portfolio_date
-    ON paper_portfolio (snapshot_date)
-    """,
+    # UNIQUE constraint on snapshot_date already creates an implicit index
 ]
 
 SLIPPAGE_LOG_SQL = """

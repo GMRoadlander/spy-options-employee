@@ -197,11 +197,16 @@ class StrategyManager:
 
         now = datetime.now().isoformat()
 
-        # Update strategy status
-        await self._db.execute(
-            "UPDATE strategies SET status = ?, updated_at = ? WHERE id = ?",
-            (new_status.value, now, strategy_id),
+        # Optimistic lock: only update if status hasn't changed since we read it
+        cursor = await self._db.execute(
+            "UPDATE strategies SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+            (new_status.value, now, strategy_id, current_status.value),
         )
+        if cursor.rowcount == 0:
+            raise InvalidTransitionError(
+                f"Strategy #{strategy_id} status changed concurrently "
+                f"(expected {current_status.value})"
+            )
 
         # Record transition
         await self._db.execute(
@@ -334,6 +339,14 @@ class StrategyManager:
         if strategy is None:
             raise StrategyNotFoundError(f"Strategy #{strategy_id} not found")
 
+        # Clean up hypothesis links if the table exists
+        try:
+            await self._db.execute(
+                "DELETE FROM hypothesis_strategies WHERE strategy_id = ?",
+                (str(strategy_id),),
+            )
+        except Exception:
+            pass  # table may not exist in standalone StrategyManager usage
         await self._db.execute(
             "DELETE FROM strategy_transitions WHERE strategy_id = ?",
             (strategy_id,),

@@ -171,7 +171,7 @@ class Store:
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS backtest_results (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                strategy_id TEXT NOT NULL,
+                strategy_id INTEGER NOT NULL,
                 run_at TEXT NOT NULL,
                 start_date TEXT NOT NULL,
                 end_date TEXT NOT NULL,
@@ -240,7 +240,7 @@ class Store:
         await self._db.execute("""
             CREATE TABLE IF NOT EXISTS hypothesis_strategies (
                 hypothesis_id TEXT NOT NULL REFERENCES hypotheses(id),
-                strategy_id TEXT NOT NULL,
+                strategy_id INTEGER NOT NULL REFERENCES strategies(id) ON DELETE CASCADE,
                 PRIMARY KEY (hypothesis_id, strategy_id)
             )
         """)
@@ -319,7 +319,51 @@ class Store:
         """)
 
         await self._db.commit()
+
+        # Run schema migrations for existing databases
+        await self._run_migrations()
+
         logger.info("Database initialized at %s", self.db_path)
+
+    async def _run_migrations(self) -> None:
+        """Run incremental schema migrations.
+
+        Uses a schema_version table to track which migrations have been
+        applied.  Each migration runs exactly once, in order.  New migrations
+        are appended to the list with the next sequential version number.
+        """
+        await self._db.execute(
+            "CREATE TABLE IF NOT EXISTS schema_version "
+            "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+        )
+        cursor = await self._db.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        current = row[0] or 0
+
+        # Append new migrations here. Never modify existing entries.
+        # Migrations must be safe to run on partial schemas (e.g., tests
+        # that only init Store without paper tables).
+        migrations: list[tuple[int, str]] = [
+            # v1: fix backtest_results.strategy_id TEXT -> INTEGER
+            #     (new DBs already create it as INTEGER; this covers upgrades)
+            (1, "SELECT 1"),  # no-op: ALTER not needed for SQLite type affinity
+            # v2: add busy_timeout for concurrent access resilience
+            (2, "PRAGMA busy_timeout = 5000"),
+        ]
+
+        applied = 0
+        for version, sql in migrations:
+            if version > current:
+                await self._db.execute(sql)
+                await self._db.execute(
+                    "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
+                    (version, datetime.now().isoformat()),
+                )
+                applied += 1
+
+        if applied:
+            await self._db.commit()
+            logger.info("Applied %d schema migration(s) (now at v%d)", applied, migrations[-1][0])
 
     async def close(self) -> None:
         """Close database connection.
