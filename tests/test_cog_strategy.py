@@ -6,6 +6,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
+from src.services import ServiceRegistry
+
+
+def _make_strategy_bot(**attrs) -> MagicMock:
+    """Create a mock bot with ServiceRegistry for StrategyCog tests."""
+    bot = MagicMock()
+    for k, v in attrs.items():
+        setattr(bot, k, v)
+    bot.services = ServiceRegistry(**attrs)
+    return bot
+
 from src.discord_bot.embeds import (
     build_strategy_define_embed,
     build_strategy_list_embed,
@@ -278,8 +289,7 @@ async def test_strategy_define_no_parser():
     """strategy_define sends error when parser is not attached to bot."""
     from src.discord_bot.cog_strategy import StrategyCog
 
-    bot = MagicMock(spec=["strategy_parser"])
-    bot.strategy_parser = None
+    bot = _make_strategy_bot(strategy_parser=None)
     cog = StrategyCog(bot)
 
     interaction = _make_interaction()
@@ -296,9 +306,9 @@ async def test_strategy_list_empty():
     """strategy_list returns embed with 0 strategies when DB is empty."""
     from src.discord_bot.cog_strategy import StrategyCog
 
-    bot = MagicMock()
-    bot.strategy_manager = AsyncMock()
-    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    sm = AsyncMock()
+    sm.list_strategies = AsyncMock(return_value=[])
+    bot = _make_strategy_bot(strategy_manager=sm)
     cog = StrategyCog(bot)
 
     interaction = _make_interaction()
@@ -316,10 +326,10 @@ async def test_strategy_show_not_found():
     """strategy_show sends 'not found' when strategy doesn't exist."""
     from src.discord_bot.cog_strategy import StrategyCog
 
-    bot = MagicMock()
-    bot.strategy_manager = AsyncMock()
-    bot.strategy_manager.get = AsyncMock(return_value=None)
-    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    sm = AsyncMock()
+    sm.get = AsyncMock(return_value=None)
+    sm.list_strategies = AsyncMock(return_value=[])
+    bot = _make_strategy_bot(strategy_manager=sm)
     cog = StrategyCog(bot)
 
     interaction = _make_interaction()
@@ -336,13 +346,13 @@ async def test_strategy_edit_template_error_no_leak():
     """strategy_edit does not leak exception details when template load fails."""
     from src.discord_bot.cog_strategy import StrategyCog
 
-    bot = MagicMock()
-    bot.strategy_parser = MagicMock()
-    bot.strategy_manager = AsyncMock()
-    bot.strategy_manager.get = AsyncMock(return_value=_make_strategy_dict(
+    sp = MagicMock()
+    sm = AsyncMock()
+    sm.get = AsyncMock(return_value=_make_strategy_dict(
         1, "My IC", "defined", template_yaml="invalid: [yaml: {{broken"
     ))
-    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
+    sm.list_strategies = AsyncMock(return_value=[])
+    bot = _make_strategy_bot(strategy_parser=sp, strategy_manager=sm)
     cog = StrategyCog(bot)
 
     interaction = _make_interaction()
@@ -365,13 +375,13 @@ async def test_backtest_template_error_no_leak():
     """backtest does not leak exception details when template load fails."""
     from src.discord_bot.cog_strategy import StrategyCog
 
-    bot = MagicMock()
-    bot.strategy_manager = AsyncMock()
-    bot.strategy_manager.get = AsyncMock(return_value=_make_strategy_dict(
+    sm = AsyncMock()
+    sm.get = AsyncMock(return_value=_make_strategy_dict(
         1, "My IC", "defined", template_yaml="some: yaml"
     ))
-    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
-    bot.strategy_manager.transition = AsyncMock()
+    sm.list_strategies = AsyncMock(return_value=[])
+    sm.transition = AsyncMock()
+    bot = _make_strategy_bot(strategy_manager=sm)
     cog = StrategyCog(bot)
 
     interaction = _make_interaction()
@@ -395,11 +405,11 @@ async def test_strategy_retire_success():
     """strategy_retire transitions strategy and sends confirmation."""
     from src.discord_bot.cog_strategy import StrategyCog
 
-    bot = MagicMock()
-    bot.strategy_manager = AsyncMock()
-    bot.strategy_manager.get = AsyncMock(return_value=_make_strategy_dict(1, "My IC", "defined"))
-    bot.strategy_manager.list_strategies = AsyncMock(return_value=[])
-    bot.strategy_manager.transition = AsyncMock()
+    sm = AsyncMock()
+    sm.get = AsyncMock(return_value=_make_strategy_dict(1, "My IC", "defined"))
+    sm.list_strategies = AsyncMock(return_value=[])
+    sm.transition = AsyncMock()
+    bot = _make_strategy_bot(strategy_manager=sm)
     cog = StrategyCog(bot)
 
     interaction = _make_interaction(manage_guild=True)

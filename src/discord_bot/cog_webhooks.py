@@ -21,6 +21,7 @@ class WebhooksCog(commands.Cog, name="Webhooks"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         logger.info("WebhooksCog loaded")
 
     async def cog_load(self) -> None:
@@ -56,7 +57,7 @@ class WebhooksCog(commands.Cog, name="Webhooks"):
                 logger.info("Posted TradingView alert to channel %d", channel_id)
 
                 # Log signal (non-blocking, graceful degradation)
-                signal_logger = getattr(self.bot, "signal_logger", None)
+                signal_logger = self.services.signal_logger
                 if signal_logger is not None:
                     try:
                         from src.db.signal_log import SignalEvent

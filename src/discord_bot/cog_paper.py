@@ -153,6 +153,7 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         self._daily_posted_date: str = ""  # prevent double daily post
         logger.info("PaperTradingCog loaded")
 
@@ -193,13 +194,13 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
 
     def _get_engine(self) -> "PaperTradingEngine | None":
         """Get paper engine from bot, with None guard."""
-        return getattr(self.bot, "paper_engine", None)
+        return self.services.paper_engine
 
     # -- Shared helper methods ------------------------------------------------
 
     async def _enrich_positions(self, positions: list[dict]) -> list[dict]:
         """Add strategy_name to each position dict."""
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             return positions
 
@@ -243,7 +244,7 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
 
     async def _enrich_trades(self, trades: list[dict]) -> list[dict]:
         """Add strategy_name to each trade dict."""
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             return trades
 
@@ -272,7 +273,7 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
         # Build query
         if strategy_filter:
             # Resolve strategy name to ID
-            manager = getattr(self.bot, "strategy_manager", None)
+            manager = self.services.strategy_manager
             strategy_id = None
             if manager:
                 try:
@@ -528,7 +529,7 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
                 return
 
             # Get strategy name
-            manager = getattr(self.bot, "strategy_manager", None)
+            manager = self.services.strategy_manager
             strategy_name = f"Strategy #{position['strategy_id']}"
             if manager:
                 try:
@@ -599,7 +600,7 @@ class PaperTradingCog(commands.Cog, name="PaperTrading"):
         # Show position details and ask for confirmation
         from src.discord_bot.embeds import build_paper_position_detail_embed
 
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         strategy_name = f"Strategy #{position['strategy_id']}"
         if manager:
             try:

@@ -33,6 +33,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         logger.info("StrategyCog loaded")
 
     @staticmethod
@@ -57,7 +58,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
         """Parse NL description into strategy template, show for confirmation."""
         await interaction.response.defer()
 
-        parser = getattr(self.bot, "strategy_parser", None)
+        parser = self.services.strategy_parser
         if parser is None:
             await interaction.followup.send(
                 "Strategy parser not available. Check bot configuration.",
@@ -85,7 +86,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
             return
 
         # Save as IDEA status in DB
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             await interaction.followup.send(
                 "Strategy manager not available.", ephemeral=True,
@@ -124,7 +125,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
         """List all strategies with status indicators."""
         await interaction.response.defer()
 
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             await interaction.followup.send(
                 "Strategy manager not available.", ephemeral=True,
@@ -151,7 +152,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
         """Show full strategy details including YAML and lifecycle history."""
         await interaction.response.defer()
 
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             await interaction.followup.send(
                 "Strategy manager not available.", ephemeral=True,
@@ -191,8 +192,8 @@ class StrategyCog(commands.Cog, name="Strategy"):
         """Edit a strategy via NL feedback through the parser."""
         await interaction.response.defer()
 
-        parser = getattr(self.bot, "strategy_parser", None)
-        manager = getattr(self.bot, "strategy_manager", None)
+        parser = self.services.strategy_parser
+        manager = self.services.strategy_manager
         if parser is None or manager is None:
             await interaction.followup.send(
                 "Strategy parser/manager not available.", ephemeral=True,
@@ -271,7 +272,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
             )
             return
 
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             await interaction.followup.send(
                 "Strategy manager not available.", ephemeral=True,
@@ -320,7 +321,7 @@ class StrategyCog(commands.Cog, name="Strategy"):
         """Run backtest evaluation pipeline and post results."""
         await interaction.response.defer()
 
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             await interaction.followup.send(
                 "Strategy manager not available.", ephemeral=True,
@@ -393,8 +394,8 @@ class StrategyCog(commands.Cog, name="Strategy"):
         """Show latest backtest/evaluation results."""
         await interaction.response.defer()
 
-        manager = getattr(self.bot, "strategy_manager", None)
-        store = getattr(self.bot, "store", None)
+        manager = self.services.strategy_manager
+        store = self.services.store
         if manager is None or store is None:
             await interaction.followup.send(
                 "Strategy manager/store not available.", ephemeral=True,

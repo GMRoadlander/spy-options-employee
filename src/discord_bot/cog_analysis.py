@@ -53,6 +53,7 @@ class AnalysisCog(commands.Cog, name="Analysis"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         logger.info("AnalysisCog loaded")
 
     async def _get_analysis(
@@ -79,7 +80,7 @@ class AnalysisCog(commands.Cog, name="Analysis"):
             )
             return None
 
-        dm = self.bot.data_manager  # type: ignore[attr-defined]
+        dm = self.services.data_manager  # type: ignore[attr-defined]
 
         try:
             chain = await dm.get_chain(ticker)
@@ -203,7 +204,7 @@ class AnalysisCog(commands.Cog, name="Analysis"):
             last_update = getattr(scheduler_cog, "last_update_time", None)
 
         # Check data source health by attempting a lightweight cache check
-        dm = self.bot.data_manager  # type: ignore[attr-defined]
+        dm = self.services.data_manager  # type: ignore[attr-defined]
         cache_info = dm.cache_info
 
         data_sources: dict[str, bool] = {}

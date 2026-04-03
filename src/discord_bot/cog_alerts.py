@@ -27,6 +27,7 @@ class AlertsCog(commands.Cog, name="Alerts"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         # Track previous analysis for comparison (OI shift detection)
         self._previous_results: dict[str, AnalysisResult] = {}
         # Track previous net GEX sign for gamma flip detection
@@ -53,7 +54,7 @@ class AlertsCog(commands.Cog, name="Alerts"):
         Returns:
             Store instance or None.
         """
-        store = getattr(self.bot, "store", None)
+        store = self.services.store
         return store
 
     async def _can_fire(self, alert_type: str) -> bool:
@@ -114,7 +115,7 @@ class AlertsCog(commands.Cog, name="Alerts"):
             strength: Signal strength (0.0-1.0).
             metadata: Optional additional data.
         """
-        signal_logger = getattr(self.bot, "signal_logger", None)
+        signal_logger = self.services.signal_logger
         if signal_logger is None:
             return
         try:

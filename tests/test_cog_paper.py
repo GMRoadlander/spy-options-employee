@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 
 from src.paper.models import PortfolioSummary
+from src.services import ServiceRegistry
 
 
 # -- Fixtures ----------------------------------------------------------------
@@ -21,6 +22,11 @@ def _make_bot():
     bot.get_channel = MagicMock(return_value=MagicMock(spec=discord.TextChannel))
     # Needed for background tasks
     bot.wait_until_ready = AsyncMock()
+    # ServiceRegistry for cog dependency injection
+    bot.services = ServiceRegistry(
+        paper_engine=bot.paper_engine,
+        strategy_manager=bot.strategy_manager,
+    )
     return bot
 
 
@@ -61,6 +67,7 @@ def _make_cog(bot=None):
         bot = _make_bot()
     cog = PaperTradingCog.__new__(PaperTradingCog)
     cog.bot = bot
+    cog.services = bot.services
     cog._daily_posted_date = ""
     return cog
 
@@ -124,6 +131,7 @@ class TestPaperStatus(unittest.IsolatedAsyncioTestCase):
         """paper_status with no engine sends ephemeral error."""
         bot = _make_bot()
         bot.paper_engine = None
+        bot.services.paper_engine = None
         cog = _make_cog(bot)
         interaction = _make_interaction()
 

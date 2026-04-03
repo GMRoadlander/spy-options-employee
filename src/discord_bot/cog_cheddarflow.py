@@ -136,6 +136,7 @@ class CheddarFlowCog(commands.Cog, name="CheddarFlow"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         logger.info("CheddarFlowCog loaded")
 
     @commands.Cog.listener()
@@ -188,7 +189,7 @@ class CheddarFlowCog(commands.Cog, name="CheddarFlow"):
                 )
 
                 # Log signal (non-blocking, graceful degradation)
-                signal_logger = getattr(self.bot, "signal_logger", None)
+                signal_logger = self.services.signal_logger
                 if signal_logger is not None:
                     try:
                         from src.db.signal_log import SignalEvent

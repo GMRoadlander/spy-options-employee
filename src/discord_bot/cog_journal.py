@@ -33,6 +33,7 @@ class JournalCog(commands.Cog, name="Journal"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         logger.info("JournalCog loaded")
 
     async def cog_load(self) -> None:
@@ -88,9 +89,9 @@ class JournalCog(commands.Cog, name="Journal"):
         Returns:
             PaperPerformanceReporter instance or None.
         """
-        paper_engine = getattr(self.bot, "paper_engine", None)
-        strategy_manager = getattr(self.bot, "strategy_manager", None)
-        store = getattr(self.bot, "store", None)
+        paper_engine = self.services.paper_engine
+        strategy_manager = self.services.strategy_manager
+        store = self.services.store
         if paper_engine is None or strategy_manager is None or store is None:
             return None
         from src.discord_bot.paper_reporting import PaperPerformanceReporter
@@ -102,8 +103,8 @@ class JournalCog(commands.Cog, name="Journal"):
         Returns:
             StrategyReporter instance or None.
         """
-        store = getattr(self.bot, "store", None)
-        manager = getattr(self.bot, "strategy_manager", None)
+        store = self.services.store
+        manager = self.services.strategy_manager
         if store is None or manager is None:
             return None
         from src.discord_bot.reporting import StrategyReporter
@@ -173,7 +174,7 @@ class JournalCog(commands.Cog, name="Journal"):
             )
             return
 
-        store = getattr(self.bot, "store", None)
+        store = self.services.store
         if store is None:
             await interaction.followup.send(
                 "Store not available.", ephemeral=True,
@@ -511,7 +512,7 @@ class JournalCog(commands.Cog, name="Journal"):
 
     async def _get_signal_stats_since(self, since: datetime) -> dict:
         """Get signal statistics since a given time."""
-        signal_logger = getattr(self.bot, "signal_logger", None)
+        signal_logger = self.services.signal_logger
         if signal_logger is None:
             return {"total_signals": 0, "by_type": {}, "by_direction": {}, "outcome_counts": {}}
 
@@ -519,7 +520,7 @@ class JournalCog(commands.Cog, name="Journal"):
 
     async def _get_strategy_summary(self) -> list[dict]:
         """Get summary of active strategies."""
-        manager = getattr(self.bot, "strategy_manager", None)
+        manager = self.services.strategy_manager
         if manager is None:
             return []
 
@@ -530,7 +531,7 @@ class JournalCog(commands.Cog, name="Journal"):
 
     async def _get_rating_stats_since(self, since: datetime) -> dict:
         """Get signal rating statistics since a given time."""
-        store = getattr(self.bot, "store", None)
+        store = self.services.store
         if store is None:
             return {"count": 0, "avg_rating": 0.0}
 
@@ -556,7 +557,7 @@ class JournalCog(commands.Cog, name="Journal"):
         author: str = "system",
     ) -> None:
         """Save a journal entry to the database."""
-        store = getattr(self.bot, "store", None)
+        store = self.services.store
         if store is None:
             return
 

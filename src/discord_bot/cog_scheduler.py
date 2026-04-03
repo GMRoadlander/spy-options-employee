@@ -71,6 +71,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.services = bot.services  # type: ignore[attr-defined]
         self.last_update_time: datetime | None = None
         self.last_results: dict[str, AnalysisResult] = {}
         self._premarket_posted_today: bool = False
@@ -124,7 +125,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
         Returns:
             Dict mapping ticker to AnalysisResult for successful analyses.
         """
-        dm = self.bot.data_manager  # type: ignore[attr-defined]
+        dm = self.services.data_manager  # type: ignore[attr-defined]
         results: dict[str, AnalysisResult] = {}
 
         try:
@@ -148,7 +149,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             logger.warning("Scheduler cycle produced no results")
 
         # Run paper trading engine tick with live chain data
-        paper_engine = getattr(self.bot, "paper_engine", None)
+        paper_engine = self.services.paper_engine
         if paper_engine is not None and chains:
             try:
                 tick_result = await paper_engine.tick(chains)
@@ -241,7 +242,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             logger.info("Posting pre-market analysis")
 
             # Initialize paper trading engine for the day
-            paper_engine = getattr(self.bot, "paper_engine", None)
+            paper_engine = self.services.paper_engine
             if paper_engine is not None:
                 try:
                     await paper_engine.start_of_day()
@@ -279,11 +280,11 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
                 self._postmarket_posted_today = True
 
             # Paper trading: EOD settlement and daily snapshot
-            paper_engine = getattr(self.bot, "paper_engine", None)
+            paper_engine = self.services.paper_engine
             if paper_engine is not None:
                 # Get the latest chains for settlement pricing
                 try:
-                    dm = self.bot.data_manager  # type: ignore[attr-defined]
+                    dm = self.services.data_manager  # type: ignore[attr-defined]
                     chains = await dm.get_all_chains()
                 except Exception:
                     chains = {}
@@ -308,7 +309,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
                     logger.error("Paper engine daily snapshot failed: %s", exc, exc_info=True)
 
                 # Portfolio risk analysis (Phase 4-5)
-                portfolio_analyzer = getattr(self.bot, "portfolio_analyzer", None)
+                portfolio_analyzer = self.services.portfolio_analyzer
                 if portfolio_analyzer is not None:
                     try:
                         open_pos = await paper_engine.position_tracker.get_open_positions()
@@ -336,7 +337,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
                     logger.error("Paper alert check failed: %s", exc, exc_info=True)
 
             # Recurring database cleanup (don't rely solely on shutdown)
-            store = getattr(self.bot, "store", None)
+            store = self.services.store
             if store is not None:
                 try:
                     await store.cleanup_old()
@@ -437,7 +438,7 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
 
         self._ml_reasoning_posted_today = True
 
-        reasoning_mgr = getattr(self.bot, "reasoning_manager", None)
+        reasoning_mgr = self.services.reasoning_manager
         if reasoning_mgr is None:
             logger.debug("ML reasoning briefing skipped -- ReasoningManager not available")
             return

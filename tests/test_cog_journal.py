@@ -8,6 +8,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
+from src.services import ServiceRegistry
+
+
+def _attach_services(cog, bot):
+    """Attach a ServiceRegistry to a cog from its mock bot's attributes."""
+    attrs = {}
+    for field in ("store", "strategy_manager", "signal_logger", "paper_engine",
+                  "strategy_parser", "data_manager"):
+        val = getattr(bot, field, None)
+        if not isinstance(val, MagicMock) or val._mock_name is not None:
+            attrs[field] = val
+        else:
+            attrs[field] = val
+    bot.services = ServiceRegistry(**attrs)
+    cog.services = bot.services
+
 from src.discord_bot.embeds import (
     build_daily_summary_embed,
     build_weekly_review_embed,
@@ -243,9 +259,11 @@ async def test_journal_note_saves():
 
     bot = MagicMock()
     bot.store = store
+    bot.services = ServiceRegistry(store=store)
     # Prevent background tasks from starting
     cog = JournalCog.__new__(JournalCog)
     cog.bot = bot
+    cog.services = bot.services
 
     interaction = _make_interaction()
     await cog.journal_note.callback(cog, interaction, content="Market looks bullish today")
@@ -267,8 +285,10 @@ async def test_journal_rate_validates_range():
     from src.discord_bot.cog_journal import JournalCog
 
     bot = MagicMock()
+    bot.services = ServiceRegistry()
     cog = JournalCog.__new__(JournalCog)
     cog.bot = bot
+    cog.services = bot.services
 
     interaction = _make_interaction()
     await cog.journal_rate.callback(cog, interaction, signal_id=1, rating=7, notes="")
@@ -286,8 +306,10 @@ async def test_journal_rate_no_store():
 
     bot = MagicMock()
     bot.store = None
+    bot.services = ServiceRegistry(store=None)
     cog = JournalCog.__new__(JournalCog)
     cog.bot = bot
+    cog.services = bot.services
 
     interaction = _make_interaction()
     await cog.journal_rate.callback(cog, interaction, signal_id=1, rating=4, notes="")
@@ -304,12 +326,15 @@ async def test_journal_rate_no_store():
 def _make_cog_with_bot(**bot_attrs):
     """Create a JournalCog instance bypassing __init__ with a mock bot."""
     from src.discord_bot.cog_journal import JournalCog
+    from src.services import ServiceRegistry
 
     cog = JournalCog.__new__(JournalCog)
     bot = MagicMock()
     for k, v in bot_attrs.items():
         setattr(bot, k, v)
+    bot.services = ServiceRegistry(**bot_attrs)
     cog.bot = bot
+    cog.services = bot.services
     return cog
 
 
@@ -949,7 +974,9 @@ def test_get_paper_reporter_returns_none_without_engine():
     bot.paper_engine = None
     bot.strategy_manager = MagicMock()
     bot.store = MagicMock()
+    bot.services = ServiceRegistry(paper_engine=None, strategy_manager=bot.strategy_manager, store=bot.store)
     cog.bot = bot
+    cog.services = bot.services
 
     result = cog._get_paper_reporter()
     assert result is None
@@ -964,7 +991,9 @@ def test_get_paper_reporter_returns_reporter_with_engine():
     bot.paper_engine = MagicMock()
     bot.strategy_manager = MagicMock()
     bot.store = MagicMock()
+    bot.services = ServiceRegistry(paper_engine=bot.paper_engine, strategy_manager=bot.strategy_manager, store=bot.store)
     cog.bot = bot
+    cog.services = bot.services
 
     result = cog._get_paper_reporter()
     assert result is not None

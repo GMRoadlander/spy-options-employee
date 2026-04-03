@@ -14,6 +14,7 @@ import discord
 from discord.ext import commands
 
 from src.data.data_manager import DataManager
+from src.services import ServiceRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,7 @@ class SpyBot(commands.Bot):
     """Discord bot for SPY/SPX options analysis.
 
     Attributes:
-        data_manager: Shared DataManager instance for all cogs.
-        store: Shared Store instance for persistence and cooldowns.
+        services: Typed registry of all application services.
     """
 
     def __init__(self) -> None:
@@ -31,20 +31,20 @@ class SpyBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
 
-        # Shared resources -- initialized in setup_hook
+        # Typed service registry — cogs access this instead of getattr(self, ...)
+        self.services = ServiceRegistry()
+
+        # Legacy aliases — kept during migration so existing code doesn't break.
+        # TODO: remove once all cogs use self.services directly.
         self.data_manager: DataManager = None  # type: ignore[assignment]
-        self.store = None  # Optional: will be set if db module is available
-        self.historical_store = None  # Optional: HistoricalStore (Phase 2)
-        self.strategy_manager = None  # Optional: StrategyManager (Phase 2)
-        self.signal_logger = None  # Optional: SignalLogger (Phase 2)
-        self.strategy_parser = None  # Optional: StrategyParser (Phase 2-3)
-        self.hypothesis_manager = None  # Optional: HypothesisManager (Phase 2-3)
-
-        # Paper Trading (Phase 4) -- optional, bot runs without them
-        self.paper_engine = None  # Optional: PaperTradingEngine
-        self.portfolio_analyzer = None  # Optional: PortfolioAnalyzer (Phase 4-5)
-
-        # ML Intelligence Layer (Phase 3) -- all optional, bot runs without them
+        self.store = None
+        self.historical_store = None
+        self.strategy_manager = None
+        self.signal_logger = None
+        self.strategy_parser = None
+        self.hypothesis_manager = None
+        self.paper_engine = None
+        self.portfolio_analyzer = None
         self.feature_store = None
         self.regime_manager = None
         self.vol_manager = None
@@ -141,6 +141,9 @@ class SpyBot(commands.Bot):
         # -- Phase 4: Paper Trading Engine initialization ----------------------
         await self._init_paper_trading()
 
+        # Sync all initialized services into the typed registry
+        self._sync_services()
+
         # Log Phase 4 summary
         paper_components = {
             "PaperTradingEngine": self.paper_engine is not None,
@@ -175,6 +178,28 @@ class SpyBot(commands.Bot):
                 logger.error("Failed to load extension %s: %s", ext, exc, exc_info=True)
 
         # Slash command sync happens in on_ready() where guilds are available
+
+    def _sync_services(self) -> None:
+        """Copy all initialized components into the typed ServiceRegistry."""
+        s = self.services
+        s.data_manager = self.data_manager
+        s.store = self.store
+        s.historical_store = self.historical_store
+        s.strategy_manager = self.strategy_manager
+        s.signal_logger = self.signal_logger
+        s.strategy_parser = self.strategy_parser
+        s.hypothesis_manager = self.hypothesis_manager
+        s.feature_store = self.feature_store
+        s.regime_manager = self.regime_manager
+        s.vol_manager = self.vol_manager
+        s.sentiment_manager = self.sentiment_manager
+        s.anomaly_manager = self.anomaly_manager
+        s.flow_analyzer = self.flow_analyzer
+        s.reasoning_engine = self.reasoning_engine
+        s.reasoning_manager = self.reasoning_manager
+        s.learning_manager = self.learning_manager
+        s.paper_engine = self.paper_engine
+        s.portfolio_analyzer = self.portfolio_analyzer
 
     async def _init_paper_trading(self) -> None:
         """Initialize Phase 4 paper trading components with graceful degradation.
