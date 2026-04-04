@@ -301,12 +301,17 @@ async def _run_combo_engine(
     spot: float,
     iv: float,
     cost: float | None,
+    regime: str | None = None,
 ) -> "ComboOddsResult":
-    from src.analysis.combo_odds import evaluate_combo
-    from src.analysis.combo_odds import ComboOddsResult as EngineResult
+    from src.analysis.combo_odds import evaluate_combo, JUMP_REGIMES, DEFAULT_REGIME
     from src.config import config as cfg
 
     engine_legs = _convert_legs(parsed)
+
+    # Resolve regime jump parameters
+    reg = regime or DEFAULT_REGIME
+    reg_params = JUMP_REGIMES.get(reg, JUMP_REGIMES[DEFAULT_REGIME])
+
     result = await evaluate_combo(
         legs=engine_legs,
         spot=spot,
@@ -314,6 +319,9 @@ async def _run_combo_engine(
         r=cfg.risk_free_rate,
         n_paths=100_000,
         entry_cost=cost * 100 if cost else None,
+        jump_intensity=reg_params["intensity"],
+        jump_mean=reg_params["mean"],
+        jump_std=reg_params["std"],
     )
     return result
 
@@ -367,7 +375,7 @@ class ComboCog(commands.Cog, name="Combo"):
         spot: float | None,
         cost: float | None,
     ) -> None:
-        # Extract inline what-if params from combo text: iv:0.35 spot:640 cost:1.50
+        # Extract inline what-if params from combo text
         if iv is None:
             m = re.search(r"iv[:\s]+(\d+\.?\d*)", combo)
             if m:
@@ -383,11 +391,18 @@ class ComboCog(commands.Cog, name="Combo"):
             if m:
                 cost = float(m.group(1))
 
+        # Extract regime: normal, elevated, fear, crisis
+        regime = None
+        m = re.search(r"regime[:\s]+(normal|elevated|fear|crisis)", combo, re.IGNORECASE)
+        if m:
+            regime = m.group(1).lower()
+
         # Strip what-if params from combo text before parsing legs
         clean_combo = re.sub(r"(?:optional\s+)?(?:what-if[:\s]*)?\/?odds\s+", " ", combo)
         clean_combo = re.sub(r"iv[:\s]+\d+\.?\d*", "", clean_combo)
         clean_combo = re.sub(r"spot[:\s]+\d+\.?\d*", "", clean_combo)
         clean_combo = re.sub(r"cost[:\s]+\d+\.?\d*", "", clean_combo)
+        clean_combo = re.sub(r"regime[:\s]+\w+", "", clean_combo)
         clean_combo = clean_combo.strip().strip(",").strip()
 
         try:
@@ -435,7 +450,7 @@ class ComboCog(commands.Cog, name="Combo"):
             if iv is None:
                 live_iv = float(getattr(chain, "atm_iv", 0.20))
         try:
-            result = await _run_combo_engine(parsed, live_spot, live_iv, cost)
+            result = await _run_combo_engine(parsed, live_spot, live_iv, cost, regime=regime)
         except Exception as exc:
             logger.error("Combo engine error: %s", exc, exc_info=True)
             await interaction.followup.send(

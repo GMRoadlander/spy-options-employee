@@ -32,10 +32,18 @@ _CALENDAR_DAYS_PER_YEAR: float = 365.0
 # of ln(K/S) below ATM. Calibrated to SPX skew at moderate DTE.
 _SKEW_SLOPE: float = 0.10
 
-# Merton jump-diffusion parameters tuned to SPX historical tail behaviour.
-_JUMP_INTENSITY: float = 1.5     # expected jumps per calendar year (moderate)
-_JUMP_MEAN: float = -0.02        # mean log-jump size (slightly negative = left tail)
-_JUMP_STD: float = 0.04          # log-jump volatility
+# Merton jump-diffusion parameters — regime-dependent.
+JUMP_REGIMES: dict[str, dict[str, float]] = {
+    "normal": {"intensity": 1.5, "mean": -0.01, "std": 0.03},
+    "elevated": {"intensity": 3.0, "mean": -0.02, "std": 0.04},
+    "fear": {"intensity": 5.0, "mean": -0.03, "std": 0.05},
+    "crisis": {"intensity": 8.0, "mean": -0.05, "std": 0.07},
+}
+DEFAULT_REGIME: str = "fear"  # current market: tariff escalation
+_regime = JUMP_REGIMES[DEFAULT_REGIME]
+_JUMP_INTENSITY: float = _regime["intensity"]
+_JUMP_MEAN: float = _regime["mean"]
+_JUMP_STD: float = _regime["std"]
 
 # Concurrency gate: one simulation at a time to cap memory on the droplet.
 _sim_semaphore: asyncio.Semaphore = asyncio.Semaphore(1)
@@ -469,6 +477,9 @@ async def evaluate_combo(
     n_paths: int = MAX_PATHS,
     entry_cost: float | None = None,
     seed: int | None = None,
+    jump_intensity: float = _JUMP_INTENSITY,
+    jump_mean: float = _JUMP_MEAN,
+    jump_std: float = _JUMP_STD,
 ) -> ComboOddsResult:
     """Evaluate a multi-leg options combo via jump-diffusion Monte Carlo.
 
@@ -495,6 +506,7 @@ async def evaluate_combo(
         spot_by_horizon = simulate_jump_diffusion(
             S0=spot, sigma=atm_iv, horizons_days=horizons,
             n_paths=n_paths, r=r, seed=seed,
+            jump_intensity=jump_intensity, jump_mean=jump_mean, jump_std=jump_std,
         )
 
         # Map calendar_near legs to their paired calendar_far counterpart
