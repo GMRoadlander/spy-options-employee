@@ -429,12 +429,11 @@ def _detect_risk_flags(
     for lg in legs:
         if lg.action != "sell" or lg.leg_role != "single":
             continue
+        # A sold option is protected if there's a buy of the same type at ANY strike
+        # (vertical spread = defined risk regardless of strike ordering)
         protected = any(
             bl.option_type == lg.option_type
-            and (
-                (lg.option_type == "call" and bl.strike >= lg.strike)
-                or (lg.option_type == "put" and bl.strike <= lg.strike)
-            )
+            and bl.dte_days == lg.dte_days
             for bl in buy_legs
         )
         if not protected:

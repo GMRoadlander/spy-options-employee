@@ -161,6 +161,8 @@ def _parse_combo_regex(description: str) -> ParsedCombo | None:
                 exp_match = re.search(r"(\d{1,2})/(\d{1,2})", seg)
                 if exp_match and float(exp_match.group(1)) <= 12:
                     exp = _parse_expiration(exp_match.group(0))
+            if s1 == s2:
+                continue  # skip identical strikes — meaningless spread
             direction = "sell" if "sell" in seg else "buy"
             hedge = "sell" if direction == "buy" else "buy"
             legs.append(ComboLeg(opt, direction, s1, exp))
@@ -318,7 +320,7 @@ async def _run_combo_engine(
         atm_iv=iv,
         r=cfg.risk_free_rate,
         n_paths=100_000,
-        entry_cost=cost * 100 if cost else None,
+        entry_cost=cost * 100 if cost is not None else None,
         jump_intensity=reg_params["intensity"],
         jump_mean=reg_params["mean"],
         jump_std=reg_params["std"],
@@ -449,6 +451,17 @@ class ComboCog(commands.Cog, name="Combo"):
                 live_spot = float(getattr(chain, "spot_price", 0.0))
             if iv is None:
                 live_iv = float(getattr(chain, "atm_iv", 0.20))
+
+        # Input validation
+        if live_spot <= 0:
+            await interaction.followup.send(
+                "Invalid spot price. Provide a positive value with spot:XXX.",
+                ephemeral=True,
+            )
+            return
+        if live_iv <= 0 or live_iv > 2.0:
+            live_iv = max(0.05, min(live_iv, 2.0))
+
         try:
             result = await _run_combo_engine(parsed, live_spot, live_iv, cost, regime=regime)
         except Exception as exc:
@@ -459,7 +472,7 @@ class ComboCog(commands.Cog, name="Combo"):
             )
             return
         overrides_used = iv is not None or spot is not None or cost is not None
-        embed = build_odds_embed(result, parsed, spot=live_spot, iv=live_iv, cost=cost, overrides_active=overrides_used)
+        embed = build_odds_embed(result, parsed, spot=live_spot, iv=live_iv, cost=cost, overrides_active=overrides_used, regime=regime)
 
         # Generate chart
         from src.discord_bot.charts import create_odds_chart
@@ -504,6 +517,7 @@ def build_odds_embed(
     iv: float = 0.0,
     cost: float | None = None,
     overrides_active: bool = False,
+    regime: str | None = None,
 ) -> discord.Embed:
     """Build probability matrix embed from engine ComboOddsResult."""
     color = _pop_color(result.prob_profit)
@@ -512,10 +526,10 @@ def build_odds_embed(
         color=color,
     )
 
-    # Summary
+    # Summary — labeled "per contract" so Borey knows the scale
     embed.add_field(name="P(Profit)", value=_fmt_pct(result.prob_profit), inline=True)
-    embed.add_field(name="E[P&L]", value=f"${result.expected_pnl:+.2f}", inline=True)
-    embed.add_field(name="Median", value=f"${result.median_pnl:+.2f}", inline=True)
+    embed.add_field(name="E[P&L] /ct", value=f"${result.expected_pnl:+.0f}", inline=True)
+    embed.add_field(name="Median /ct", value=f"${result.median_pnl:+.0f}", inline=True)
 
     # Percentiles
     p5 = result.percentiles.get(5, 0)
@@ -537,13 +551,14 @@ def build_odds_embed(
             inline=False,
         )
 
-    # Per-leg results
+    # Per-leg results — show P(win) and avg P&L, clarify per-contract
     if result.leg_results:
         leg_lines = []
         for lr in result.leg_results:
-            leg_lines.append(f"{lr.leg_name}: E=${lr.mean_pnl:+.1f} P={lr.prob_profit:.0%}")
+            short_name = lr.leg_name.replace("leg", "").lstrip("0123456789_")
+            leg_lines.append(f"{short_name}: ${lr.mean_pnl:+.0f}/ct  win={lr.prob_profit:.0%}")
         embed.add_field(
-            name="Legs",
+            name="Legs (avg P&L per contract)",
             value="```\n" + "\n".join(leg_lines)[:900] + "\n```",
             inline=False,
         )
@@ -554,6 +569,8 @@ def build_odds_embed(
         embed.add_field(name="Risk Flags", value=flags_text[:1024], inline=False)
 
     footer = [f"{result.n_paths:,} paths", f"seed={result.seed_used}"]
+    if regime:
+        footer.append(f"regime={regime}")
     if overrides_active:
         footer.append("what-if active")
     embed.set_footer(text=" | ".join(footer))
