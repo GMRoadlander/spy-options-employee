@@ -168,6 +168,7 @@ class SpyBot(commands.Bot):
             "src.discord_bot.cog_journal",
             "src.discord_bot.cog_ml",
             "src.discord_bot.cog_paper",
+            "src.discord_bot.cog_combo",
         ]
 
         for ext in cog_extensions:
