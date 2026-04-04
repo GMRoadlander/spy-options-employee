@@ -324,6 +324,7 @@ async def _run_combo_engine(
         jump_intensity=reg_params["intensity"],
         jump_mean=reg_params["mean"],
         jump_std=reg_params["std"],
+        vol_ratio=reg_params["vol_ratio"],
     )
     return result
 

@@ -33,11 +33,13 @@ _CALENDAR_DAYS_PER_YEAR: float = 365.0
 _SKEW_SLOPE: float = 0.10
 
 # Merton jump-diffusion parameters — regime-dependent.
+# vol_ratio: realized vol / IV. Entry priced at IV, simulation at IV * vol_ratio.
+# This captures the volatility risk premium (IV > realized vol).
 JUMP_REGIMES: dict[str, dict[str, float]] = {
-    "normal": {"intensity": 1.5, "mean": -0.01, "std": 0.03},
-    "elevated": {"intensity": 3.0, "mean": -0.02, "std": 0.04},
-    "fear": {"intensity": 5.0, "mean": -0.03, "std": 0.05},
-    "crisis": {"intensity": 8.0, "mean": -0.05, "std": 0.07},
+    "normal": {"intensity": 1.5, "mean": -0.01, "std": 0.03, "vol_ratio": 0.85},
+    "elevated": {"intensity": 3.0, "mean": -0.02, "std": 0.04, "vol_ratio": 0.82},
+    "fear": {"intensity": 5.0, "mean": -0.03, "std": 0.05, "vol_ratio": 0.78},
+    "crisis": {"intensity": 8.0, "mean": -0.05, "std": 0.07, "vol_ratio": 0.70},
 }
 DEFAULT_REGIME: str = "fear"  # current market: tariff escalation
 _regime = JUMP_REGIMES[DEFAULT_REGIME]
@@ -479,31 +481,36 @@ async def evaluate_combo(
     jump_intensity: float = _JUMP_INTENSITY,
     jump_mean: float = _JUMP_MEAN,
     jump_std: float = _JUMP_STD,
+    vol_ratio: float = 0.78,
 ) -> ComboOddsResult:
     """Evaluate a multi-leg options combo via jump-diffusion Monte Carlo.
 
-    Acquires _sim_semaphore before simulating to ensure at most one heavy
-    simulation runs at a time on the shared droplet (memory safety).
+    Entry is priced at full IV (market price). Simulation uses IV * vol_ratio
+    (realized vol estimate) to capture the volatility risk premium.
     """
     n_paths = min(n_paths, MAX_PATHS)
     if seed is None:
         seed = int(time.time() * 1000) % (2 ** 31 - 1)
 
     async with _sim_semaphore:
-        # Price each leg at entry using BS — this makes P&L realistic
-        # and IV-sensitive. If entry_cost is provided, use it as override.
+        # Price each leg at entry using FULL IV (what you pay/receive)
         theo_debit = price_legs_at_entry(legs, spot, atm_iv, r)
         if entry_cost is None:
-            entry_cost = abs(theo_debit * 100)  # P&L already per-contract
+            entry_cost = abs(theo_debit * 100)
+
+        # Simulate at REALIZED VOL = IV * vol_ratio (how SPY actually moves)
+        sim_vol = atm_iv * vol_ratio
 
         logger.info(
-            "evaluate_combo: %d legs spot=%.2f atm_iv=%.3f n_paths=%d seed=%d theo_debit=%.2f",
-            len(legs), spot, atm_iv, n_paths, seed, theo_debit,
+            "evaluate_combo: %d legs spot=%.2f iv=%.3f sim_vol=%.3f (ratio=%.0f%%) "
+            "n_paths=%d seed=%d theo_debit=%.2f",
+            len(legs), spot, atm_iv, sim_vol, vol_ratio * 100,
+            n_paths, seed, theo_debit,
         )
 
         horizons = sorted({lg.dte_days for lg in legs if lg.dte_days > 0}) or [1]
         spot_by_horizon = simulate_jump_diffusion(
-            S0=spot, sigma=atm_iv, horizons_days=horizons,
+            S0=spot, sigma=sim_vol, horizons_days=horizons,
             n_paths=n_paths, r=r, seed=seed,
             jump_intensity=jump_intensity, jump_mean=jump_mean, jump_std=jump_std,
         )
