@@ -845,3 +845,126 @@ def create_regime_timeline_chart(
         logger.error("Failed to create regime timeline chart: %s", exc, exc_info=True)
         plt.close("all")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Combo Odds Charts
+# ---------------------------------------------------------------------------
+
+
+def create_odds_chart(result: object, spot: float) -> discord.File | None:
+    """Create a combined P&L payoff + probability zone chart for /odds.
+
+    Top panel: scenario P&L bar chart (green=profit, red=loss).
+    Bottom panel: probability zones as horizontal bars.
+
+    Args:
+        result: ComboOddsResult from the engine.
+        spot: Current spot price for reference line.
+
+    Returns:
+        discord.File containing the PNG chart, or None on error.
+    """
+    try:
+        scenario_table = getattr(result, "scenario_table", [])
+        leg_results = getattr(result, "leg_results", [])
+        prob_profit = getattr(result, "prob_profit", 0.0)
+        expected_pnl = getattr(result, "expected_pnl", 0.0)
+        percentiles = getattr(result, "percentiles", {})
+
+        if not scenario_table:
+            return None
+
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(10, 8), height_ratios=[3, 2],
+            gridspec_kw={"hspace": 0.35},
+        )
+
+        # ---- Top panel: Scenario P&L payoff ----
+        spots = [s["spot"] for s in scenario_table]
+        pnls = [s["pnl"] for s in scenario_table]
+        colors = ["#00ff88" if p >= 0 else "#ff4466" for p in pnls]
+
+        bars = ax1.bar(spots, pnls, width=(spots[-1] - spots[0]) / len(spots) * 0.7,
+                       color=colors, alpha=0.85, edgecolor="white", linewidth=0.5)
+
+        # Zero line
+        ax1.axhline(y=0, color="white", linewidth=0.8, alpha=0.5)
+
+        # Current spot marker
+        ax1.axvline(x=spot, color="#ffaa00", linewidth=1.5, linestyle="--", alpha=0.8,
+                     label=f"Spot ${spot:.0f}")
+
+        # Add P&L labels on bars
+        for bar_obj, pnl in zip(bars, pnls):
+            y_pos = bar_obj.get_height()
+            va = "bottom" if pnl >= 0 else "top"
+            ax1.text(bar_obj.get_x() + bar_obj.get_width() / 2, y_pos,
+                     f"${pnl:+.0f}", ha="center", va=va, fontsize=8,
+                     fontweight="bold", color="white")
+
+        ax1.set_xlabel("SPY Price at Expiry", fontsize=10)
+        ax1.set_ylabel("Combo P&L ($)", fontsize=10)
+        ax1.set_title(
+            f"Combo Payoff Diagram  |  P(Profit) = {prob_profit:.0%}  |  E[P&L] = ${expected_pnl:+.1f}",
+            fontsize=12, fontweight="bold", pad=10,
+        )
+        ax1.legend(loc="upper right", fontsize=9)
+        ax1.grid(axis="y", alpha=0.2)
+
+        # ---- Bottom panel: Probability distribution ----
+        p5 = percentiles.get(5, 0)
+        p25 = percentiles.get(25, 0)
+        p50 = percentiles.get(50, 0)
+        p75 = percentiles.get(75, 0)
+        p95 = percentiles.get(95, 0)
+
+        # Horizontal box-whisker style visualization
+        zones = [
+            ("Worst 5%", p5, "#ff4466"),
+            ("P25", p25, "#ff8844"),
+            ("Median", p50, "#ffcc00"),
+            ("P75", p75, "#88cc44"),
+            ("Best 5%", p95, "#00ff88"),
+        ]
+
+        y_positions = list(range(len(zones)))
+        values = [z[1] for z in zones]
+        zone_colors = [z[2] for z in zones]
+        labels = [z[0] for z in zones]
+
+        h_bars = ax2.barh(y_positions, values, color=zone_colors, alpha=0.8,
+                          edgecolor="white", linewidth=0.5, height=0.6)
+
+        ax2.set_yticks(y_positions)
+        ax2.set_yticklabels(labels, fontsize=10)
+        ax2.axvline(x=0, color="white", linewidth=0.8, alpha=0.5)
+
+        # Add value labels
+        for bar_obj, val in zip(h_bars, values):
+            x_pos = bar_obj.get_width()
+            ha = "left" if val >= 0 else "right"
+            offset = 2 if val >= 0 else -2
+            ax2.text(x_pos + offset, bar_obj.get_y() + bar_obj.get_height() / 2,
+                     f"${val:+.0f}", ha=ha, va="center", fontsize=9,
+                     fontweight="bold", color="white")
+
+        ax2.set_xlabel("P&L ($)", fontsize=10)
+        ax2.set_title("P&L Distribution (Percentiles)", fontsize=11, fontweight="bold", pad=8)
+        ax2.grid(axis="x", alpha=0.2)
+
+        # Per-leg breakdown as text annotation
+        if leg_results:
+            leg_text = "  ".join(
+                f"{lr.leg_name.split('_', 1)[-1]}: ${lr.mean_pnl:+.1f}"
+                for lr in leg_results[:6]
+            )
+            fig.text(0.5, 0.01, leg_text, ha="center", fontsize=8,
+                     color="#aaaaaa", style="italic")
+
+        return _save_to_discord_file(fig, "odds_chart.png")
+
+    except Exception as exc:
+        logger.error("Failed to create odds chart: %s", exc, exc_info=True)
+        plt.close("all")
+        return None

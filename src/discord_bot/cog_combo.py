@@ -78,6 +78,114 @@ def _get_claude_client() -> anthropic.AsyncAnthropic:
     return _claude_client
 
 
+import re
+from datetime import date, timedelta
+
+
+def _parse_expiration(exp_str: str) -> str | None:
+    """Parse expiration like 'apr17', '4/17', 'april 17', 'may8'."""
+    exp_str = exp_str.strip().lower()
+    months = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "april": 4,
+        "may": 5, "jun": 6, "jul": 7, "aug": 8,
+        "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    # Format: apr17, april17, may8
+    m = re.match(r"([a-z]+)\s*(\d{1,2})", exp_str)
+    if m and m.group(1) in months:
+        month = months[m.group(1)]
+        day = int(m.group(2))
+        year = date.today().year
+        return f"{year}-{month:02d}-{day:02d}"
+    # Format: 4/17, 4/7
+    m = re.match(r"(\d{1,2})/(\d{1,2})", exp_str)
+    if m:
+        month, day = int(m.group(1)), int(m.group(2))
+        year = date.today().year
+        return f"{year}-{month:02d}-{day:02d}"
+    return None
+
+
+def _parse_combo_regex(description: str) -> ParsedCombo | None:
+    """Try to parse combo with regex before falling back to Claude."""
+    desc = description.lower().strip()
+    segments = re.split(r"[,+]", desc)
+    legs: list[ComboLeg] = []
+
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+
+        # Reverse calendar: "reverse cal 600p apr17/may8" or "600p revcal apr17/may8"
+        rc = re.search(
+            r"(?:reverse\s*cal(?:endar)?|revcal|rc)\s+(\d+(?:\.\d+)?)\s*([pc])\s+"
+            r"([a-z]+\d+|[\d/]+)\s*/\s*([a-z]+\d+|[\d/]+)",
+            seg,
+        )
+        if not rc:
+            rc = re.search(
+                r"(\d+(?:\.\d+)?)\s*([pc])\s+(?:reverse\s*cal(?:endar)?|revcal|rc)\s+"
+                r"([a-z]+\d+|[\d/]+)\s*/\s*([a-z]+\d+|[\d/]+)",
+                seg,
+            )
+        if rc:
+            strike = float(rc.group(1))
+            opt = "put" if rc.group(2) == "p" else "call"
+            near_exp = _parse_expiration(rc.group(3))
+            far_exp = _parse_expiration(rc.group(4))
+            legs.append(ComboLeg(opt, "sell", strike, near_exp))
+            legs.append(ComboLeg(opt, "buy", strike, far_exp))
+            continue
+
+        # Spread: "645/635 put spread apr17" or "sell 645/635p apr17"
+        sp = re.search(
+            r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*([pc])?",
+            seg,
+        )
+        if sp:
+            s1, s2 = float(sp.group(1)), float(sp.group(2))
+            opt_raw = sp.group(3) or ""
+            if not opt_raw:
+                if "put" in seg:
+                    opt_raw = "p"
+                elif "call" in seg:
+                    opt_raw = "c"
+            opt = "put" if opt_raw.startswith("p") else "call"
+            # Find expiration anywhere in segment
+            exp = None
+            exp_match = re.search(r"(?:exp\s*)?([a-z]{3,5})(\d{1,2})\b", seg)
+            if exp_match:
+                exp = _parse_expiration(exp_match.group(1) + exp_match.group(2))
+            if not exp:
+                exp_match = re.search(r"(\d{1,2})/(\d{1,2})", seg)
+                if exp_match and float(exp_match.group(1)) <= 12:
+                    exp = _parse_expiration(exp_match.group(0))
+            direction = "sell" if "sell" in seg else "buy"
+            legs.append(ComboLeg(opt, "buy", max(s1, s2), exp))
+            legs.append(ComboLeg(opt, "sell", min(s1, s2), exp))
+            continue
+
+    if not legs:
+        return None
+
+    return ParsedCombo(
+        strategy_name="Options Combo",
+        legs=legs,
+        notes="Parsed via regex (no Claude API needed)",
+    )
+
+
+async def _parse_combo(description: str) -> ParsedCombo:
+    """Parse combo: try regex first, fall back to Claude."""
+    result = _parse_combo_regex(description)
+    if result is not None:
+        logger.info("Parsed combo via regex: %d legs", len(result.legs))
+        return result
+    logger.info("Regex parse failed, trying Claude...")
+    return await _parse_combo_via_claude(description)
+
+
 async def _parse_combo_via_claude(description: str) -> ParsedCombo:
     if not config.claude_api_key:
         raise ComboParseError("Claude API key not configured")
@@ -137,50 +245,76 @@ async def _parse_combo_via_claude(description: str) -> ParsedCombo:
 # the cog loads cleanly even when that module is not yet implemented.
 # ---------------------------------------------------------------------------
 
-@dataclass
-class ComboOddsResult:
-    """Output from the combo odds engine."""
-    strategy_name: str
-    probability_of_profit: float
-    expected_value: float
-    max_profit: float | None
-    max_loss: float | None
-    delta: float
-    gamma: float
-    theta: float
-    vega: float
-    spot_used: float
-    iv_used: float
-    cost_used: float | None
-    notes: str = ""
+def _convert_legs(parsed: ParsedCombo) -> list:
+    """Convert cog ComboLeg objects to engine ComboLeg objects."""
+    from src.analysis.combo_odds import ComboLeg as EngineLeg
+    from datetime import date as dt_date
+
+    engine_legs = []
+    today = dt_date.today()
+
+    # Group legs to detect spreads vs calendars
+    for i, leg in enumerate(parsed.legs):
+        # Calculate DTE from expiration string
+        dte = 14  # default
+        if leg.expiration:
+            try:
+                exp_date = dt_date.fromisoformat(leg.expiration)
+                dte = max((exp_date - today).days, 1)
+            except ValueError:
+                pass
+
+        strike = leg.strike or 0.0
+        action = leg.direction if leg.direction in ("buy", "sell") else "buy"
+
+        engine_legs.append(EngineLeg(
+            leg_name=f"leg{i+1}_{action}_{leg.option_type}_{strike:.0f}",
+            option_type=leg.option_type,
+            strike=strike,
+            dte_days=dte,
+            action=action,
+            quantity=leg.quantity,
+            leg_role="single",
+        ))
+
+    # Detect calendar spreads (same strike, same type, different DTE, buy+sell)
+    for i, a in enumerate(engine_legs):
+        for j, b in enumerate(engine_legs):
+            if i >= j:
+                continue
+            if (a.strike == b.strike and a.option_type == b.option_type
+                    and a.action != b.action and a.dte_days != b.dte_days):
+                # Calendar pair found
+                if a.dte_days < b.dte_days:
+                    near, far = a, b
+                else:
+                    near, far = b, a
+                near.leg_role = "calendar_near"
+                far.leg_role = "calendar_far"
+
+    return engine_legs
 
 
-def _run_combo_engine(
+async def _run_combo_engine(
     parsed: ParsedCombo,
     spot: float,
     iv: float,
     cost: float | None,
-) -> ComboOddsResult:
-    try:
-        from src.analysis.combo_odds import evaluate_combo  # type: ignore[import]
-        return evaluate_combo(parsed, spot=spot, iv=iv, cost=cost)
-    except ImportError:
-        logger.warning("src.analysis.combo_odds not yet implemented -- returning stub result")
-        return ComboOddsResult(
-            strategy_name=parsed.strategy_name,
-            probability_of_profit=0.0,
-            expected_value=0.0,
-            max_profit=None,
-            max_loss=None,
-            delta=0.0,
-            gamma=0.0,
-            theta=0.0,
-            vega=0.0,
-            spot_used=spot,
-            iv_used=iv,
-            cost_used=cost,
-            notes="combo_odds engine not yet implemented",
-        )
+) -> "ComboOddsResult":
+    from src.analysis.combo_odds import evaluate_combo
+    from src.analysis.combo_odds import ComboOddsResult as EngineResult
+    from src.config import config as cfg
+
+    engine_legs = _convert_legs(parsed)
+    result = await evaluate_combo(
+        legs=engine_legs,
+        spot=spot,
+        atm_iv=iv,
+        r=cfg.risk_free_rate,
+        n_paths=100_000,
+        entry_cost=cost * 100 if cost else None,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -232,8 +366,31 @@ class ComboCog(commands.Cog, name="Combo"):
         spot: float | None,
         cost: float | None,
     ) -> None:
+        # Extract inline what-if params from combo text: iv:0.35 spot:640 cost:1.50
+        if iv is None:
+            m = re.search(r"iv[:\s]+(\d+\.?\d*)", combo)
+            if m:
+                iv = float(m.group(1))
+                if iv > 1:
+                    iv = iv / 100  # 35 -> 0.35
+        if spot is None:
+            m = re.search(r"spot[:\s]+(\d+\.?\d*)", combo)
+            if m:
+                spot = float(m.group(1))
+        if cost is None:
+            m = re.search(r"cost[:\s]+(\d+\.?\d*)", combo)
+            if m:
+                cost = float(m.group(1))
+
+        # Strip what-if params from combo text before parsing legs
+        clean_combo = re.sub(r"(?:optional\s+)?(?:what-if[:\s]*)?\/?odds\s+", " ", combo)
+        clean_combo = re.sub(r"iv[:\s]+\d+\.?\d*", "", clean_combo)
+        clean_combo = re.sub(r"spot[:\s]+\d+\.?\d*", "", clean_combo)
+        clean_combo = re.sub(r"cost[:\s]+\d+\.?\d*", "", clean_combo)
+        clean_combo = clean_combo.strip().strip(",").strip()
+
         try:
-            parsed = await _parse_combo_via_claude(combo)
+            parsed = await _parse_combo(clean_combo)
         except ComboParseError as exc:
             logger.error("Combo parse failed: %s", exc)
             await interaction.followup.send(
@@ -277,9 +434,7 @@ class ComboCog(commands.Cog, name="Combo"):
             if iv is None:
                 live_iv = float(getattr(chain, "atm_iv", 0.20))
         try:
-            result: ComboOddsResult = await asyncio.to_thread(
-                _run_combo_engine, parsed, live_spot, live_iv, cost
-            )
+            result = await _run_combo_engine(parsed, live_spot, live_iv, cost)
         except Exception as exc:
             logger.error("Combo engine error: %s", exc, exc_info=True)
             await interaction.followup.send(
@@ -288,9 +443,17 @@ class ComboCog(commands.Cog, name="Combo"):
             )
             return
         overrides_used = iv is not None or spot is not None or cost is not None
-        primary = build_odds_embed(result, parsed, overrides_active=overrides_used)
-        detail_embeds = build_odds_detail_embeds(result, parsed)
-        await interaction.followup.send(embeds=[primary, *detail_embeds])
+        embed = build_odds_embed(result, parsed, spot=live_spot, iv=live_iv, cost=cost, overrides_active=overrides_used)
+
+        # Generate chart
+        from src.discord_bot.charts import create_odds_chart
+        chart = await asyncio.to_thread(create_odds_chart, result, live_spot)
+        files: list[discord.File] = []
+        if chart is not None:
+            embed.set_image(url="attachment://odds_chart.png")
+            files.append(chart)
+
+        await interaction.followup.send(embed=embed, files=files if files else discord.utils.MISSING)
 
 
 # ---------------------------------------------------------------------------
@@ -318,59 +481,67 @@ def _pop_color(pop: float) -> int:
 
 
 def build_odds_embed(
-    result: ComboOddsResult,
+    result: Any,
     parsed: ParsedCombo,
     *,
+    spot: float = 0.0,
+    iv: float = 0.0,
+    cost: float | None = None,
     overrides_active: bool = False,
 ) -> discord.Embed:
-    color = _pop_color(result.probability_of_profit)
-    embed = discord.Embed(title=f"Odds: {result.strategy_name}", color=color)
-    embed.add_field(name="Prob. of Profit", value=_fmt_pct(result.probability_of_profit), inline=True)
-    embed.add_field(name="Expected Value", value=_fmt_price(result.expected_value), inline=True)
-    max_profit_str = _fmt_price(result.max_profit) if result.max_profit is not None else "Unlimited"
-    max_loss_str = _fmt_price(result.max_loss) if result.max_loss is not None else "Unlimited"
-    embed.add_field(name="Max Profit", value=max_profit_str, inline=True)
-    embed.add_field(name="Max Loss", value=max_loss_str, inline=True)
-    embed.add_field(name="Spot Used", value=_fmt_price(result.spot_used), inline=True)
-    embed.add_field(name="IV Used", value=_fmt_pct(result.iv_used), inline=True)
-    if result.cost_used is not None:
-        embed.add_field(name="Cost Override", value=_fmt_price(result.cost_used), inline=True)
-    if result.notes:
-        embed.add_field(name="Notes", value=result.notes[:1024], inline=False)
-    footer_parts = [f"{len(parsed.legs)} leg(s)"]
-    if overrides_active:
-        footer_parts.append("what-if overrides applied")
-    embed.set_footer(text=" | ".join(footer_parts))
-    return embed
+    """Build probability matrix embed from engine ComboOddsResult."""
+    color = _pop_color(result.prob_profit)
+    embed = discord.Embed(
+        title=f"Odds: {parsed.strategy_name}",
+        color=color,
+    )
 
+    # Summary
+    embed.add_field(name="P(Profit)", value=_fmt_pct(result.prob_profit), inline=True)
+    embed.add_field(name="E[P&L]", value=f"${result.expected_pnl:+.2f}", inline=True)
+    embed.add_field(name="Median", value=f"${result.median_pnl:+.2f}", inline=True)
 
-def build_odds_detail_embeds(
-    result: ComboOddsResult,
-    parsed: ParsedCombo,
-) -> list[discord.Embed]:
-    embeds: list[discord.Embed] = []
-    greeks_embed = discord.Embed(title="Greeks", color=COLOR_INFO)
-    greeks_embed.add_field(name="Delta", value=_fmt_greek(result.delta), inline=True)
-    greeks_embed.add_field(name="Gamma", value=_fmt_greek(result.gamma), inline=True)
-    greeks_embed.add_field(name="Theta", value=_fmt_greek(result.theta), inline=True)
-    greeks_embed.add_field(name="Vega", value=_fmt_greek(result.vega), inline=True)
-    embeds.append(greeks_embed)
-    if parsed.legs:
-        legs_embed = discord.Embed(title="Parsed Legs", color=COLOR_INFO)
-        leg_lines: list[str] = []
-        for i, leg in enumerate(parsed.legs, start=1):
-            strike_str = _fmt_price(leg.strike) if leg.strike is not None else "n/a"
-            leg_lines.append(
-                f"**{i}.** {leg.direction.upper()} {leg.quantity}x "
-                f"{leg.option_type.upper()} {strike_str} exp {leg.expiration or 'n/a'}"
-            )
-        legs_embed.add_field(
-            name="Legs",
-            value="\n".join(leg_lines)[:1024],
+    # Percentiles
+    p5 = result.percentiles.get(5, 0)
+    p95 = result.percentiles.get(95, 0)
+    embed.add_field(name="P5 / P95", value=f"${p5:+.0f} / ${p95:+.0f}", inline=True)
+    embed.add_field(name="Spot", value=f"${spot:,.2f}", inline=True)
+    embed.add_field(name="IV", value=_fmt_pct(iv), inline=True)
+
+    # Scenario table
+    if result.scenario_table:
+        lines = []
+        for s in result.scenario_table:
+            pnl = s["pnl"]
+            bar = "+" * min(max(1, int(pnl / 2)), 8) if pnl > 0 else "-" * min(max(1, int(abs(pnl) / 2)), 8)
+            lines.append(f"{s['move_pct']:+5.1f}% ${s['spot']:>7.0f} {bar}")
+        embed.add_field(
+            name="Scenario Table",
+            value="```\n" + "\n".join(lines) + "\n```",
             inline=False,
         )
-        embeds.append(legs_embed)
-    return embeds
+
+    # Per-leg results
+    if result.leg_results:
+        leg_lines = []
+        for lr in result.leg_results:
+            leg_lines.append(f"{lr.leg_name}: E=${lr.mean_pnl:+.1f} P={lr.prob_profit:.0%}")
+        embed.add_field(
+            name="Legs",
+            value="```\n" + "\n".join(leg_lines)[:900] + "\n```",
+            inline=False,
+        )
+
+    # Risk flags
+    if result.risk_flags:
+        flags_text = "\n".join(f"[!] {f}" for f in result.risk_flags)
+        embed.add_field(name="Risk Flags", value=flags_text[:1024], inline=False)
+
+    footer = [f"{result.n_paths:,} paths", f"seed={result.seed_used}"]
+    if overrides_active:
+        footer.append("what-if active")
+    embed.set_footer(text=" | ".join(footer))
+    return embed
 
 
 async def setup(bot: commands.Bot) -> None:

@@ -16,7 +16,7 @@ class Config:
     commands_channel_id: int = int(os.getenv("DISCORD_COMMANDS_CHANNEL_ID", "0"))
 
     # Claude API
-    claude_api_key: str = os.getenv("CLAUDE_API_KEY", "")
+    claude_api_key: str = os.getenv("CLAUDE_API_KEY", "") or os.getenv("ANTHROPIC_API_KEY", "")
     claude_model: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
     # Tastytrade (primary data source — OAuth2)
