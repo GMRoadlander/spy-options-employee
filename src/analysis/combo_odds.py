@@ -33,7 +33,7 @@ _CALENDAR_DAYS_PER_YEAR: float = 365.0
 _SKEW_SLOPE: float = 0.10
 
 # Merton jump-diffusion parameters tuned to SPX historical tail behaviour.
-_JUMP_INTENSITY: float = 0.05    # expected jumps per calendar year
+_JUMP_INTENSITY: float = 1.5     # expected jumps per calendar year (moderate)
 _JUMP_MEAN: float = -0.02        # mean log-jump size (slightly negative = left tail)
 _JUMP_STD: float = 0.04          # log-jump volatility
 
@@ -94,7 +94,7 @@ class LegResult:
 class ComboOddsResult:
     """Output from evaluate_combo.
 
-    All P&L values are per-unit (single contract, no multiplier).
+    All P&L values are per-contract (x100 multiplier applied).
 
     Attributes:
         prob_profit: Fraction of paths where total P&L > 0.
@@ -285,15 +285,16 @@ def compute_leg_pnl(
 ) -> np.ndarray:
     """Compute per-path P&L for a leg at its own expiry horizon.
 
-    P&L = sign * (expiry_value - entry_premium) * quantity
+    P&L = sign * (expiry_value - entry_premium) * quantity * 100
     Entry premium is set by price_legs_at_entry() before simulation.
+    Per-contract (x100 multiplier applied).
     """
     n = len(spot_at_expiry)
     sign = 1.0 if leg.action == "buy" else -1.0
 
     if leg.leg_role in ("single", "vertical_long", "vertical_short"):
         value = _bs_price(spot_at_expiry, leg.strike, 0.0, atm_iv, r, leg.option_type)
-        return sign * (value - leg.entry_premium) * leg.quantity
+        return sign * (value - leg.entry_premium) * leg.quantity * 100
 
     if leg.leg_role == "calendar_near":
         if far_leg is None:
@@ -319,7 +320,7 @@ def compute_leg_pnl(
         # Short near (received premium) + long far (paid premium)
         net_entry_cost = far_entry - near_entry  # positive = net debit
         spread_value = far_value - near_value
-        return (spread_value - net_entry_cost) * leg.quantity
+        return (spread_value - net_entry_cost) * leg.quantity * 100
 
     if leg.leg_role == "calendar_far":
         return np.zeros(n)
@@ -345,41 +346,61 @@ def simulate_jump_diffusion(
 ) -> dict[int, np.ndarray]:
     """Simulate terminal spot prices via Merton jump-diffusion GBM.
 
+    Uses day-by-day stepping so that each horizon has its own independent
+    path of diffusion + jumps.  This is critical for calendar spreads where
+    the near and far horizons must NOT be perfectly correlated.
+
+    horizons_days are calendar days; stepping uses trading days (252/365).
+
     Returns dict mapping each horizon (calendar days) to shape-(n_paths,) array.
     """
     n_paths = min(n_paths, MAX_PATHS)
     rng = np.random.default_rng(seed)
 
-    horizons_sorted = sorted(horizons_days)
-    T_max = horizons_sorted[-1] / _CALENDAR_DAYS_PER_YEAR
+    dt = 1.0 / 252.0  # one trading day
 
-    # Jump-compensation drift
+    # Convert calendar-day horizons to trading-day checkpoints
+    horizons_sorted = sorted(set(horizons_days))
+    trading_day_checkpoints: dict[int, int] = {}
+    for h in horizons_sorted:
+        td = max(1, int(round(h * 252.0 / 365.0)))
+        trading_day_checkpoints[h] = td
+
+    total_steps = max(trading_day_checkpoints.values())
+
+    # Jump-compensation drift per step
     k_bar = np.exp(jump_mean + 0.5 * jump_std ** 2) - 1.0
-    drift = (r - 0.5 * sigma ** 2 - jump_intensity * k_bar) * T_max
+    drift_per_step = (r - 0.5 * sigma ** 2 - jump_intensity * k_bar) * dt
 
-    # Diffusion
-    z = rng.standard_normal(size=n_paths)
-    log_diffusion = drift + sigma * np.sqrt(T_max) * z
-
-    # Jumps
-    n_jumps = rng.poisson(lam=jump_intensity * T_max, size=n_paths)
+    # Pre-generate all random draws: diffusion + jump counts + jump sizes
+    dW = rng.standard_normal(size=(total_steps, n_paths)) * np.sqrt(dt)
+    n_jumps = rng.poisson(lam=jump_intensity * dt, size=(total_steps, n_paths))
     max_j = int(n_jumps.max()) if n_jumps.size > 0 and n_jumps.max() > 0 else 0
-    log_jumps = np.zeros(n_paths)
+
+    # Per-step log returns: drift + diffusion + jumps
+    per_step = drift_per_step + sigma * dW
     if max_j > 0:
-        sizes = rng.normal(loc=jump_mean, scale=jump_std, size=(n_paths, max_j))
-        mask = np.arange(max_j)[np.newaxis, :] < n_jumps[:, np.newaxis]
-        log_jumps = (sizes * mask).sum(axis=1)
+        # For each step, draw jump sizes and mask by actual jump count
+        jump_sizes = rng.normal(
+            loc=jump_mean, scale=jump_std,
+            size=(total_steps, n_paths, max_j),
+        )
+        jump_mask = np.arange(max_j)[np.newaxis, np.newaxis, :] < n_jumps[:, :, np.newaxis]
+        per_step += (jump_sizes * jump_mask).sum(axis=2)
 
-    log_return_max = log_diffusion + log_jumps
+    # Cumulative log-return along the time axis
+    cum_log = np.cumsum(per_step, axis=0)
 
+    # Extract prices at each horizon checkpoint
     result: dict[int, np.ndarray] = {}
     for h in horizons_sorted:
-        scale = (h / _CALENDAR_DAYS_PER_YEAR) / T_max
-        result[h] = S0 * np.exp(log_return_max * scale)
+        td_idx = trading_day_checkpoints[h] - 1  # 0-based index
+        result[h] = S0 * np.exp(cum_log[td_idx])
 
     logger.debug(
-        "simulate_jump_diffusion: S0=%.2f sigma=%.3f horizons=%s n_paths=%d",
-        S0, sigma, horizons_days, n_paths,
+        "simulate_jump_diffusion: S0=%.2f sigma=%.3f horizons=%s n_paths=%d "
+        "total_trading_steps=%d",
+        S0, sigma, horizons_days, n_paths, total_steps,
     )
     return result
 
@@ -422,6 +443,17 @@ def _detect_risk_flags(
                 f"{tail_loss / abs(entry_cost):.1f}x entry cost ${abs(entry_cost):.0f}"
             )
 
+    # Deep-drop calendar risk: short near-dated leg loses more than spread gains
+    calendar_near_legs = [lg for lg in legs if lg.leg_role == "calendar_near"]
+    if calendar_near_legs:
+        p1_pnl = float(np.percentile(pnl_array, 1))
+        if entry_cost is not None and p1_pnl < -abs(entry_cost):
+            flags.append(
+                f"CALENDAR_DEEP_DROP: 1st-pct P&L ${p1_pnl:.0f} exceeds "
+                f"spread entry cost ${abs(entry_cost):.0f} — "
+                "near-leg loss overwhelms far-leg gain on large move"
+            )
+
     return flags
 
 
@@ -452,7 +484,7 @@ async def evaluate_combo(
         # and IV-sensitive. If entry_cost is provided, use it as override.
         theo_debit = price_legs_at_entry(legs, spot, atm_iv, r)
         if entry_cost is None:
-            entry_cost = abs(theo_debit) * 100  # convert per-share to per-contract
+            entry_cost = abs(theo_debit * 100)  # P&L already per-contract
 
         logger.info(
             "evaluate_combo: %d legs spot=%.2f atm_iv=%.3f n_paths=%d seed=%d theo_debit=%.2f",

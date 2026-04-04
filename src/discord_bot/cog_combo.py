@@ -162,8 +162,9 @@ def _parse_combo_regex(description: str) -> ParsedCombo | None:
                 if exp_match and float(exp_match.group(1)) <= 12:
                     exp = _parse_expiration(exp_match.group(0))
             direction = "sell" if "sell" in seg else "buy"
-            legs.append(ComboLeg(opt, "buy", max(s1, s2), exp))
-            legs.append(ComboLeg(opt, "sell", min(s1, s2), exp))
+            hedge = "sell" if direction == "buy" else "buy"
+            legs.append(ComboLeg(opt, direction, s1, exp))
+            legs.append(ComboLeg(opt, hedge, s2, exp))
             continue
 
     if not legs:

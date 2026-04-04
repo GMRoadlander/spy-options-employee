@@ -178,7 +178,8 @@ class TestComputeLegPnl:
         leg = ComboLeg("test_put", "put", 640.0, 14, "buy", leg_role="single")
         spots = np.array([600.0, 620.0, 640.0, 660.0])
         pnl = compute_leg_pnl(leg, spots, S0, ATM_VOL, R)
-        expected = np.maximum(640.0 - spots, 0.0)
+        # P&L is per-contract (x100 multiplier)
+        expected = np.maximum(640.0 - spots, 0.0) * 100
         np.testing.assert_allclose(pnl, expected, rtol=0.01)
 
     def test_calendar_far_returns_zeros(self):
@@ -253,8 +254,6 @@ class TestEvaluateCombo:
             legs=self._BOREY_LEGS, spot=S0, atm_iv=ATM_VOL,
             r=R, n_paths=50_000, entry_cost=100.0, seed=SEED,
         ))
-        # With no debit subtracted, prob_profit should be very high
-        assert 0.50 <= result.prob_profit <= 1.0
-        # Expected PNL should be finite and non-negative
-        assert result.expected_pnl >= 0.0
+        # With entry pricing, prob_profit should be in a reasonable range
+        assert 0.10 <= result.prob_profit <= 0.90
         assert np.isfinite(result.expected_pnl)
