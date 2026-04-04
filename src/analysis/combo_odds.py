@@ -227,6 +227,51 @@ def _bs_price(
 
 
 # ---------------------------------------------------------------------------
+# Entry pricing — compute what each leg costs to open
+# ---------------------------------------------------------------------------
+
+def price_leg_at_entry(
+    leg: ComboLeg,
+    spot: float,
+    atm_iv: float,
+    r: float,
+) -> float:
+    """Price a single leg at entry using BS with skew-adjusted IV.
+
+    Returns the theoretical premium (positive = costs money to buy).
+    """
+    T = leg.dte_days / _CALENDAR_DAYS_PER_YEAR
+    iv = estimate_iv(leg.strike, spot, atm_iv, leg.dte_days)
+    price = float(_bs_price(np.array([spot]), leg.strike, T, iv, r, leg.option_type)[0])
+    return max(price, 0.0)
+
+
+def price_legs_at_entry(
+    legs: list[ComboLeg],
+    spot: float,
+    atm_iv: float,
+    r: float,
+) -> float:
+    """Price all legs and set entry_premium on each. Returns net combo debit.
+
+    Positive return = net debit (you pay). Negative = net credit (you receive).
+    """
+    net_debit = 0.0
+    for leg in legs:
+        premium = price_leg_at_entry(leg, spot, atm_iv, r)
+        leg.entry_premium = premium
+        if leg.action == "buy":
+            net_debit += premium * leg.quantity
+        else:
+            net_debit -= premium * leg.quantity
+    logger.info(
+        "Priced %d legs at entry: net debit = $%.2f (spot=%.2f, iv=%.3f)",
+        len(legs), net_debit, spot, atm_iv,
+    )
+    return net_debit
+
+
+# ---------------------------------------------------------------------------
 # Per-leg P&L (vectorized over paths)
 # ---------------------------------------------------------------------------
 
@@ -240,10 +285,8 @@ def compute_leg_pnl(
 ) -> np.ndarray:
     """Compute per-path P&L for a leg at its own expiry horizon.
 
-    Dispatches on leg.leg_role:
-    - "single" / "vertical_long" / "vertical_short": intrinsic at expiry.
-    - "calendar_near": near-leg intrinsic + vectorized far-leg BS reprice.
-    - "calendar_far": zero array (accounted for in calendar_near).
+    P&L = sign * (expiry_value - entry_premium) * quantity
+    Entry premium is set by price_legs_at_entry() before simulation.
     """
     n = len(spot_at_expiry)
     sign = 1.0 if leg.action == "buy" else -1.0
@@ -270,9 +313,13 @@ def compute_leg_pnl(
             far_iv, r, far_leg.option_type,
         )
 
-        # Long calendar: long far, short near; entry_premium = net debit paid
+        # Calendar P&L: value at near expiry minus net entry cost
+        near_entry = leg.entry_premium  # near leg premium at entry
+        far_entry = far_leg.entry_premium if far_leg else 0.0
+        # Short near (received premium) + long far (paid premium)
+        net_entry_cost = far_entry - near_entry  # positive = net debit
         spread_value = far_value - near_value
-        return (spread_value - leg.entry_premium) * leg.quantity
+        return (spread_value - net_entry_cost) * leg.quantity
 
     if leg.leg_role == "calendar_far":
         return np.zeros(n)
@@ -401,9 +448,15 @@ async def evaluate_combo(
         seed = int(time.time() * 1000) % (2 ** 31 - 1)
 
     async with _sim_semaphore:
+        # Price each leg at entry using BS — this makes P&L realistic
+        # and IV-sensitive. If entry_cost is provided, use it as override.
+        theo_debit = price_legs_at_entry(legs, spot, atm_iv, r)
+        if entry_cost is None:
+            entry_cost = abs(theo_debit) * 100  # convert per-share to per-contract
+
         logger.info(
-            "evaluate_combo: %d legs spot=%.2f atm_iv=%.3f n_paths=%d seed=%d",
-            len(legs), spot, atm_iv, n_paths, seed,
+            "evaluate_combo: %d legs spot=%.2f atm_iv=%.3f n_paths=%d seed=%d theo_debit=%.2f",
+            len(legs), spot, atm_iv, n_paths, seed, theo_debit,
         )
 
         horizons = sorted({lg.dte_days for lg in legs if lg.dte_days > 0}) or [1]
