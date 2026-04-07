@@ -322,6 +322,147 @@ class TestPartialUpsert:
         assert row is None
 
 
+# ---------------------------------------------------------------------------
+# Tests: SpotGamma feature columns (Step 12)
+# ---------------------------------------------------------------------------
+
+
+class TestSpotGammaFeatures:
+    """Tests for SpotGamma-derived feature columns."""
+
+    @pytest.mark.asyncio
+    async def test_spotgamma_columns_in_feature_columns(self):
+        """All SpotGamma columns are registered in FEATURE_COLUMNS."""
+        sg_cols = [
+            "sg_vol_trigger",
+            "sg_call_wall",
+            "sg_put_wall",
+            "sg_abs_gamma",
+            "sg_hiro_eod",
+            "diy_hiro_eod",
+            "gex_sg_agreement",
+        ]
+        for col in sg_cols:
+            assert col in FEATURE_COLUMNS, f"{col} missing from FEATURE_COLUMNS"
+
+    @pytest.mark.asyncio
+    async def test_save_spotgamma_features(self, fs):
+        """SpotGamma features can be saved and retrieved."""
+        sg_features = {
+            "sg_vol_trigger": 5250.0,
+            "sg_call_wall": 5350.0,
+            "sg_put_wall": 5100.0,
+            "sg_abs_gamma": 5200.0,
+            "sg_hiro_eod": 1500000.0,
+            "diy_hiro_eod": 1450000.0,
+            "gex_sg_agreement": 1,
+        }
+        await fs.save_features("SPX", "2024-06-15", sg_features)
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is not None
+        assert row["sg_vol_trigger"] == pytest.approx(5250.0)
+        assert row["sg_call_wall"] == pytest.approx(5350.0)
+        assert row["sg_put_wall"] == pytest.approx(5100.0)
+        assert row["sg_abs_gamma"] == pytest.approx(5200.0)
+        assert row["sg_hiro_eod"] == pytest.approx(1500000.0)
+        assert row["diy_hiro_eod"] == pytest.approx(1450000.0)
+        assert row["gex_sg_agreement"] == pytest.approx(1)
+
+    @pytest.mark.asyncio
+    async def test_old_features_still_save_with_spotgamma(self, fs):
+        """Existing (pre-SpotGamma) features continue to work."""
+        old_features = {
+            "iv_rank": 72.0,
+            "skew_25d": 4.2,
+            "regime_state": 1,
+            "regime_probability": 0.85,
+        }
+        await fs.save_features("SPX", "2024-06-15", old_features)
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is not None
+        assert row["iv_rank"] == pytest.approx(72.0)
+        assert row["skew_25d"] == pytest.approx(4.2)
+        assert row["regime_state"] == 1
+        assert row["regime_probability"] == pytest.approx(0.85)
+        # SpotGamma columns should be NULL when not provided
+        assert row["sg_vol_trigger"] is None
+        assert row["sg_call_wall"] is None
+
+    @pytest.mark.asyncio
+    async def test_mixed_old_and_spotgamma_features(self, fs):
+        """Old and SpotGamma features can be saved together."""
+        mixed = {
+            "iv_rank": 60.0,
+            "sg_vol_trigger": 5300.0,
+            "sg_call_wall": 5400.0,
+            "gex_sg_agreement": 0,
+        }
+        await fs.save_features("SPX", "2024-06-15", mixed)
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is not None
+        assert row["iv_rank"] == pytest.approx(60.0)
+        assert row["sg_vol_trigger"] == pytest.approx(5300.0)
+        assert row["sg_call_wall"] == pytest.approx(5400.0)
+        assert row["gex_sg_agreement"] == pytest.approx(0)
+
+    @pytest.mark.asyncio
+    async def test_spotgamma_roundtrip_via_latest(self, fs):
+        """Save SpotGamma features, retrieve via get_latest_features."""
+        await fs.save_features("SPX", "2024-06-14", {"sg_hiro_eod": 1000000.0})
+        await fs.save_features("SPX", "2024-06-15", {"sg_hiro_eod": 2000000.0})
+
+        latest = await fs.get_latest_features("SPX")
+        assert latest is not None
+        assert latest["date"] == "2024-06-15"
+        assert latest["sg_hiro_eod"] == pytest.approx(2000000.0)
+
+    @pytest.mark.asyncio
+    async def test_spotgamma_history(self, fs):
+        """SpotGamma columns work with get_feature_history."""
+        dates = ["2024-06-10", "2024-06-11", "2024-06-12"]
+        for i, d in enumerate(dates):
+            await fs.save_features("SPX", d, {"sg_vol_trigger": 5200.0 + i * 10})
+
+        history = await fs.get_feature_history("SPX", "sg_vol_trigger", days=10)
+        assert len(history) == 3
+        assert history[0] == ("2024-06-10", pytest.approx(5200.0))
+        assert history[2] == ("2024-06-12", pytest.approx(5220.0))
+
+    @pytest.mark.asyncio
+    async def test_partial_upsert_preserves_spotgamma(self, fs):
+        """Partial upsert with old features preserves SpotGamma columns."""
+        await fs.save_features("SPX", "2024-06-15", {
+            "sg_vol_trigger": 5250.0,
+            "sg_call_wall": 5350.0,
+            "diy_hiro_eod": 1400000.0,
+        })
+        # Second save with different features — SpotGamma cols must survive.
+        await fs.save_features("SPX", "2024-06-15", {
+            "iv_rank": 65.0,
+            "vol_forecast_1d": 0.15,
+        })
+
+        row = await fs.get_features("SPX", "2024-06-15")
+        assert row is not None
+        assert row["sg_vol_trigger"] == pytest.approx(5250.0)
+        assert row["sg_call_wall"] == pytest.approx(5350.0)
+        assert row["diy_hiro_eod"] == pytest.approx(1400000.0)
+        assert row["iv_rank"] == pytest.approx(65.0)
+        assert row["vol_forecast_1d"] == pytest.approx(0.15)
+
+    @pytest.mark.asyncio
+    async def test_gex_sg_agreement_binary(self, fs):
+        """gex_sg_agreement stores 0/1 values correctly."""
+        await fs.save_features("SPX", "2024-06-15", {"gex_sg_agreement": 1})
+        await fs.save_features("SPX", "2024-06-16", {"gex_sg_agreement": 0})
+
+        row1 = await fs.get_features("SPX", "2024-06-15")
+        row2 = await fs.get_features("SPX", "2024-06-16")
+        assert row1 is not None and row2 is not None
+        assert row1["gex_sg_agreement"] == pytest.approx(1)
+        assert row2["gex_sg_agreement"] == pytest.approx(0)
+
+
 class TestStoreNotInitialised:
     """Tests for calling FeatureStore on an uninitialised Store."""
 

@@ -32,6 +32,16 @@ from src.analysis.combo_odds import (
     evaluate_combo,
     simulate_jump_diffusion,
 )
+from src.analysis.hiro import (
+    DIYHIROCalculator,
+    DIYHIROResult,
+)
+from src.analysis.reconciliation import (
+    LevelComparison,
+    ReconciliationResult,
+    reconcile_hiro,
+    reconcile_levels,
+)
 from src.analysis.strike_intel import (
     KeyLevel,
     StrikeIntelResult,
@@ -71,4 +81,12 @@ __all__ = [
     "LegResult",
     "evaluate_combo",
     "simulate_jump_diffusion",
+    # HIRO
+    "DIYHIROCalculator",
+    "DIYHIROResult",
+    # Reconciliation
+    "LevelComparison",
+    "ReconciliationResult",
+    "reconcile_hiro",
+    "reconcile_levels",
 ]

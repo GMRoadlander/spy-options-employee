@@ -47,3 +47,6 @@ coverage.xml
 *.sig
 *.meta.json
 data/ml_models/
+
+# SpotGamma browser auth state (cookies, localStorage)
+data/spotgamma_auth/

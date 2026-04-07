@@ -138,6 +138,9 @@ class SpyBot(commands.Bot):
         # Each component is optional -- bot runs without any ML components.
         await self._init_ml_components()
 
+        # -- Phase 4: SpotGamma initialization -----------------------------------
+        await self._init_spotgamma()
+
         # -- Phase 4: Paper Trading Engine initialization ----------------------
         await self._init_paper_trading()
 
@@ -169,6 +172,7 @@ class SpyBot(commands.Bot):
             "src.discord_bot.cog_ml",
             "src.discord_bot.cog_paper",
             "src.discord_bot.cog_combo",
+            "src.discord_bot.cog_spotgamma",
         ]
 
         for ext in cog_extensions:
@@ -199,8 +203,121 @@ class SpyBot(commands.Bot):
         s.reasoning_engine = self.reasoning_engine
         s.reasoning_manager = self.reasoning_manager
         s.learning_manager = self.learning_manager
+        s.spotgamma_auth = getattr(self, "_spotgamma_auth", None)
+        s.spotgamma_client = getattr(self, "_spotgamma_client", None)
+        s.spotgamma_scraper = getattr(self, "_spotgamma_scraper", None)
+        s.spotgamma_store = getattr(self, "_spotgamma_store", None)
         s.paper_engine = self.paper_engine
         s.portfolio_analyzer = self.portfolio_analyzer
+
+    async def _init_spotgamma(self) -> None:
+        """Initialize Phase 4 SpotGamma components with graceful degradation.
+
+        Components are initialized in dependency order:
+          Store -> Auth Broker -> Client -> Scraper
+
+        All are optional -- bot runs fine without SpotGamma.  Uses lazy
+        imports to avoid hard dependency on playwright/playwright-stealth.
+        """
+        from src.config import config
+
+        # Guard: feature flag
+        if not config.spotgamma_enabled:
+            logger.info("SpotGamma skipped -- SPOTGAMMA_ENABLED is false")
+            return
+
+        # Guard: credentials
+        if not config.spotgamma_email or not config.spotgamma_password:
+            logger.warning(
+                "SpotGamma skipped -- SPOTGAMMA_EMAIL or SPOTGAMMA_PASSWORD not set"
+            )
+            return
+
+        # Guard: Store (needed for SpotGammaStore)
+        if (
+            self.store is None
+            or not hasattr(self.store, "_db")
+            or self.store.connection is None
+        ):
+            logger.warning("SpotGamma skipped -- Store not available")
+            return
+
+        # 1. SpotGammaStore (requires Store)
+        try:
+            from src.data.spotgamma_store import SpotGammaStore
+
+            self._spotgamma_store = SpotGammaStore(self.store)
+            logger.info("SpotGammaStore initialized")
+        except ImportError:
+            logger.warning("SpotGammaStore module not available")
+            return
+        except Exception as exc:
+            logger.error("SpotGammaStore initialization failed: %s", exc)
+            return
+
+        # 2. SpotGammaAuthBroker (requires credentials)
+        try:
+            from src.data.spotgamma_auth import SpotGammaAuthBroker
+
+            self._spotgamma_auth = SpotGammaAuthBroker(
+                email=config.spotgamma_email,
+                password=config.spotgamma_password,
+                auth_dir=config.spotgamma_auth_dir,
+            )
+            logger.info("SpotGammaAuthBroker initialized")
+        except ImportError:
+            logger.warning("SpotGammaAuthBroker module not available")
+            self._spotgamma_auth = None
+        except Exception as exc:
+            logger.error("SpotGammaAuthBroker initialization failed: %s", exc)
+            self._spotgamma_auth = None
+
+        # 3. SpotGammaClient (requires auth broker)
+        if self._spotgamma_auth is not None:
+            try:
+                from src.data.spotgamma_client import SpotGammaClient
+
+                self._spotgamma_client = SpotGammaClient(self._spotgamma_auth)
+                logger.info("SpotGammaClient initialized")
+            except ImportError:
+                logger.warning("SpotGammaClient module not available")
+                self._spotgamma_client = None
+            except Exception as exc:
+                logger.error("SpotGammaClient initialization failed: %s", exc)
+                self._spotgamma_client = None
+        else:
+            self._spotgamma_client = None
+
+        # 4. SpotGammaScraper (requires auth broker -- fallback path)
+        if self._spotgamma_auth is not None:
+            try:
+                from src.data.spotgamma_scraper import SpotGammaScraper
+
+                self._spotgamma_scraper = SpotGammaScraper(self._spotgamma_auth)
+                logger.info("SpotGammaScraper initialized")
+            except ImportError:
+                logger.warning("SpotGammaScraper module not available")
+                self._spotgamma_scraper = None
+            except Exception as exc:
+                logger.error("SpotGammaScraper initialization failed: %s", exc)
+                self._spotgamma_scraper = None
+        else:
+            self._spotgamma_scraper = None
+
+        # Summary
+        sg_components = {
+            "SpotGammaStore": self._spotgamma_store is not None,
+            "SpotGammaAuthBroker": self._spotgamma_auth is not None,
+            "SpotGammaClient": self._spotgamma_client is not None,
+            "SpotGammaScraper": self._spotgamma_scraper is not None,
+        }
+        active = [k for k, v in sg_components.items() if v]
+        logger.info(
+            "SpotGamma initialization: %d/%d active [%s]",
+            len(active),
+            len(sg_components),
+            ", ".join(active) if active else "none",
+        )
 
     async def _init_paper_trading(self) -> None:
         """Initialize Phase 4 paper trading components with graceful degradation.
@@ -508,6 +625,23 @@ class SpyBot(commands.Bot):
                     logger.info("UnusualWhalesClient closed")
             except Exception as exc:
                 logger.error("Error closing UnusualWhalesClient: %s", exc)
+
+        # Close SpotGamma components
+        spotgamma_client = getattr(self, "_spotgamma_client", None)
+        if spotgamma_client is not None:
+            try:
+                await spotgamma_client.close()
+                logger.info("SpotGammaClient closed")
+            except Exception as exc:
+                logger.error("Error closing SpotGammaClient: %s", exc)
+
+        spotgamma_auth = getattr(self, "_spotgamma_auth", None)
+        if spotgamma_auth is not None:
+            try:
+                await spotgamma_auth.close()
+                logger.info("SpotGammaAuthBroker closed")
+            except Exception as exc:
+                logger.error("Error closing SpotGammaAuthBroker: %s", exc)
 
         # Close paper trading engine (release references)
         if self.paper_engine is not None:

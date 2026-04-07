@@ -298,6 +298,13 @@ class Store:
                 vol_forecast_5d REAL,
                 sentiment_score REAL,
                 anomaly_score REAL,
+                sg_vol_trigger REAL,
+                sg_call_wall REAL,
+                sg_put_wall REAL,
+                sg_abs_gamma REAL,
+                sg_hiro_eod REAL,
+                diy_hiro_eod REAL,
+                gex_sg_agreement REAL,
                 computed_at TEXT NOT NULL,
                 UNIQUE(date, ticker)
             )
@@ -350,12 +357,77 @@ class Store:
             (1, "SELECT 1"),  # no-op: ALTER not needed for SQLite type affinity
             # v2: add busy_timeout for concurrent access resilience
             (2, "PRAGMA busy_timeout = 5000"),
+            # v3: SpotGamma levels table -- daily key gamma/delta levels
+            (3, """
+                CREATE TABLE IF NOT EXISTS spotgamma_levels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    ticker TEXT NOT NULL DEFAULT 'SPX',
+                    call_wall REAL NOT NULL,
+                    put_wall REAL NOT NULL,
+                    vol_trigger REAL NOT NULL,
+                    hedge_wall REAL NOT NULL,
+                    abs_gamma REAL NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'manual'
+                )
+            """),
+            # v4: SpotGamma HIRO table -- high-frequency hedging snapshots (append-only)
+            (4, """
+                CREATE TABLE IF NOT EXISTS spotgamma_hiro (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    ticker TEXT NOT NULL DEFAULT 'SPX',
+                    hedging_impact REAL NOT NULL,
+                    cumulative_impact REAL NOT NULL,
+                    source TEXT NOT NULL DEFAULT 'api'
+                )
+            """),
+            # v5: SpotGamma notes table -- daily founder's notes
+            (5, """
+                CREATE TABLE IF NOT EXISTS spotgamma_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    key_levels_mentioned TEXT DEFAULT '{}',
+                    market_outlook TEXT NOT NULL DEFAULT 'neutral',
+                    raw_text TEXT NOT NULL DEFAULT ''
+                )
+            """),
+            # v6: Indexes for SpotGamma tables
+            (6, """
+                CREATE INDEX IF NOT EXISTS idx_spotgamma_levels_ticker_ts
+                ON spotgamma_levels (ticker, timestamp)
+            """),
+            (7, """
+                CREATE INDEX IF NOT EXISTS idx_spotgamma_hiro_ticker_ts
+                ON spotgamma_hiro (ticker, timestamp)
+            """),
+            (8, """
+                CREATE INDEX IF NOT EXISTS idx_spotgamma_notes_ts
+                ON spotgamma_notes (timestamp)
+            """),
+            # v9-v15: Add SpotGamma-derived columns to daily_features
+            (9, "ALTER TABLE daily_features ADD COLUMN sg_vol_trigger REAL"),
+            (10, "ALTER TABLE daily_features ADD COLUMN sg_call_wall REAL"),
+            (11, "ALTER TABLE daily_features ADD COLUMN sg_put_wall REAL"),
+            (12, "ALTER TABLE daily_features ADD COLUMN sg_abs_gamma REAL"),
+            (13, "ALTER TABLE daily_features ADD COLUMN sg_hiro_eod REAL"),
+            (14, "ALTER TABLE daily_features ADD COLUMN diy_hiro_eod REAL"),
+            (15, "ALTER TABLE daily_features ADD COLUMN gex_sg_agreement REAL"),
         ]
 
         applied = 0
         for version, sql in migrations:
             if version > current:
-                await self._db.execute(sql)
+                try:
+                    await self._db.execute(sql)
+                except aiosqlite.OperationalError as exc:
+                    # ALTER TABLE ADD COLUMN on a column that already exists
+                    # (e.g. fresh DB where CREATE TABLE already has it).
+                    if "duplicate column name" in str(exc):
+                        logger.debug("Migration v%d skipped (column already exists)", version)
+                    else:
+                        raise
                 await self._db.execute(
                     "INSERT INTO schema_version (version, applied_at) VALUES (?, ?)",
                     (version, now_et().isoformat()),

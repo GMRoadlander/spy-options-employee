@@ -43,6 +43,14 @@ FEATURE_COLUMNS: list[str] = [
     "vol_forecast_5d",
     "sentiment_score",
     "anomaly_score",
+    # SpotGamma-derived features (Step 12)
+    "sg_vol_trigger",
+    "sg_call_wall",
+    "sg_put_wall",
+    "sg_abs_gamma",
+    "sg_hiro_eod",
+    "diy_hiro_eod",
+    "gex_sg_agreement",
 ]
 
 

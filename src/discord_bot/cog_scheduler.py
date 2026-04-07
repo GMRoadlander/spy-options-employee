@@ -12,6 +12,7 @@ Behavior:
 
 import asyncio
 import logging
+import random
 from datetime import datetime, time, timedelta
 
 import discord
@@ -78,6 +79,11 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
         self._postmarket_posted_today: bool = False
         self._ml_daily_posted_today: bool = False
         self._ml_reasoning_posted_today: bool = False
+        self._spotgamma_auth_today: bool = False
+        self._spotgamma_premarket_today: bool = False
+        self._spotgamma_eod_today: bool = False
+        self._spotgamma_last_levels_tick: datetime | None = None
+        self._spotgamma_last_hiro_tick: datetime | None = None
         self._last_date: str = ""  # Track date for resetting daily flags
         logger.info("SchedulerCog loaded")
 
@@ -99,6 +105,11 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             self._postmarket_posted_today = False
             self._ml_daily_posted_today = False
             self._ml_reasoning_posted_today = False
+            self._spotgamma_auth_today = False
+            self._spotgamma_premarket_today = False
+            self._spotgamma_eod_today = False
+            self._spotgamma_last_levels_tick = None
+            self._spotgamma_last_hiro_tick = None
             self._last_date = today
             logger.info("Daily flags reset for %s", today)
 
@@ -482,6 +493,244 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             return None
         return channel
 
+    # -- SpotGamma integration (Phase 4) ----------------------------------------
+
+    async def _jitter(self, max_seconds: int = 30) -> None:
+        """Sleep for a random duration to avoid request-pattern detection.
+
+        Args:
+            max_seconds: Upper bound for the random sleep (seconds).
+        """
+        await asyncio.sleep(random.uniform(0, max_seconds))
+
+    def _spotgamma_available(self) -> bool:
+        """Return True if SpotGamma client and store are configured."""
+        return (
+            self.services.spotgamma_client is not None
+            and self.services.spotgamma_store is not None
+        )
+
+    async def _handle_spotgamma_auth(self) -> None:
+        """8:00 AM ET: Authenticate with SpotGamma.
+
+        Called once at start of day so that subsequent data fetches have
+        a valid session token.  Skips silently if SpotGamma is not
+        configured or if auth has already been done today.
+        """
+        if self._spotgamma_auth_today:
+            return
+
+        now = _now_et()
+        auth_time = time(8, 0)
+
+        if now.time() < auth_time:
+            return
+
+        if self.services.spotgamma_auth is None:
+            return
+
+        self._spotgamma_auth_today = True
+
+        try:
+            await self._jitter(10)
+            await self.services.spotgamma_auth.authenticate()
+            logger.info("SpotGamma: daily authentication complete")
+        except Exception as exc:
+            logger.error("SpotGamma: authentication failed: %s", exc, exc_info=True)
+
+    async def _handle_spotgamma_levels(self) -> None:
+        """Fetch SpotGamma key levels and save to store.
+
+        Called at 9:15 AM ET (pre-market) and every 30 minutes during
+        market hours.  Includes jitter to avoid detection.
+
+        PLACEHOLDER: The dict-to-dataclass conversion uses ``.get()`` with
+        defaults.  Update on Day 1 when real API response schema is known.
+        """
+        if not self._spotgamma_available():
+            return
+
+        now = _now_et()
+
+        # Pre-market fetch at 9:15 ET (once)
+        premarket_time = time(
+            config.market_open_hour,
+            config.premarket_post_minute,
+        )
+        is_premarket_window = (
+            now.time() >= premarket_time
+            and not self._spotgamma_premarket_today
+        )
+
+        # During market hours: every 30 minutes
+        is_market_tick = False
+        if _is_market_hours():
+            if (
+                self._spotgamma_last_levels_tick is None
+                or (now - self._spotgamma_last_levels_tick) >= timedelta(minutes=30)
+            ):
+                is_market_tick = True
+
+        if not is_premarket_window and not is_market_tick:
+            return
+
+        if is_premarket_window:
+            self._spotgamma_premarket_today = True
+
+        try:
+            await self._jitter(30)
+            client = self.services.spotgamma_client
+            raw = await client.get_levels("SPX")  # type: ignore[union-attr]
+
+            if raw is None:
+                logger.debug("SpotGamma: get_levels returned None — skipping")
+                return
+
+            # PLACEHOLDER: dict → dataclass conversion.
+            # Keys and structure will be updated on Day 1 when we can
+            # inspect the real SpotGamma API response.
+            from src.data.spotgamma_models import SpotGammaLevels
+
+            levels = SpotGammaLevels(
+                call_wall=float(raw.get("call_wall", 0.0)),
+                put_wall=float(raw.get("put_wall", 0.0)),
+                vol_trigger=float(raw.get("vol_trigger", 0.0)),
+                hedge_wall=float(raw.get("hedge_wall", 0.0)),
+                abs_gamma=float(raw.get("abs_gamma", 0.0)),
+                timestamp=now,
+                ticker=raw.get("ticker", "SPX"),
+                source="api",
+            )
+
+            store = self.services.spotgamma_store
+            await store.save_levels(levels)  # type: ignore[union-attr]
+            self._spotgamma_last_levels_tick = now
+            logger.info(
+                "SpotGamma: saved levels (call_wall=%.1f put_wall=%.1f vol_trigger=%.1f)",
+                levels.call_wall,
+                levels.put_wall,
+                levels.vol_trigger,
+            )
+        except Exception as exc:
+            logger.error("SpotGamma: levels fetch failed: %s", exc, exc_info=True)
+
+    async def _handle_spotgamma_hiro(self) -> None:
+        """Fetch HIRO data and save to store.
+
+        Called every 5 minutes during market hours.
+        Includes jitter to avoid detection.
+
+        PLACEHOLDER: The dict-to-dataclass conversion uses ``.get()`` with
+        defaults.  Update on Day 1 when real API response schema is known.
+        """
+        if not self._spotgamma_available():
+            return
+
+        if not _is_market_hours():
+            return
+
+        now = _now_et()
+
+        # Throttle: only fetch every 5 minutes
+        if (
+            self._spotgamma_last_hiro_tick is not None
+            and (now - self._spotgamma_last_hiro_tick) < timedelta(minutes=5)
+        ):
+            return
+
+        try:
+            await self._jitter(15)
+            client = self.services.spotgamma_client
+            raw = await client.get_hiro("SPX")  # type: ignore[union-attr]
+
+            if raw is None:
+                logger.debug("SpotGamma: get_hiro returned None — skipping")
+                return
+
+            # PLACEHOLDER: dict → dataclass conversion.
+            # Keys and structure will be updated on Day 1.
+            from src.data.spotgamma_models import SpotGammaHIRO
+
+            hiro = SpotGammaHIRO(
+                timestamp=now,
+                hedging_impact=float(raw.get("hedging_impact", 0.0)),
+                cumulative_impact=float(raw.get("cumulative_impact", 0.0)),
+                ticker=raw.get("ticker", "SPX"),
+                source="api",
+            )
+
+            store = self.services.spotgamma_store
+            await store.save_hiro(hiro)  # type: ignore[union-attr]
+            self._spotgamma_last_hiro_tick = now
+            logger.debug(
+                "SpotGamma: saved HIRO (impact=%.2f cumulative=%.2f)",
+                hiro.hedging_impact,
+                hiro.cumulative_impact,
+            )
+        except Exception as exc:
+            logger.error("SpotGamma: HIRO fetch failed: %s", exc, exc_info=True)
+
+    async def _handle_spotgamma_eod(self) -> None:
+        """Post-market: inject SpotGamma data into daily_features via feature store.
+
+        Called at 4:10 PM ET (same window as ML daily update).  Reads the
+        latest levels and HIRO from the SpotGamma store and saves them as
+        feature columns: sg_vol_trigger, sg_call_wall, sg_put_wall,
+        sg_abs_gamma, sg_hiro_eod.
+        """
+        if self._spotgamma_eod_today:
+            return
+
+        now = _now_et()
+        eod_time = time(
+            config.market_close_hour,
+            config.postmarket_post_minute + 5,  # 16:10 ET
+        )
+
+        if now.time() < eod_time:
+            return
+
+        if not self._spotgamma_available():
+            self._spotgamma_eod_today = True
+            return
+
+        feature_store = self.services.feature_store
+        if feature_store is None:
+            self._spotgamma_eod_today = True
+            return
+
+        self._spotgamma_eod_today = True
+
+        try:
+            sg_store = self.services.spotgamma_store
+            levels = await sg_store.get_latest_levels("SPX")  # type: ignore[union-attr]
+            hiro = await sg_store.get_latest_hiro("SPX")  # type: ignore[union-attr]
+
+            features: dict[str, float | int | None] = {}
+
+            if levels is not None:
+                features["sg_vol_trigger"] = levels.vol_trigger
+                features["sg_call_wall"] = levels.call_wall
+                features["sg_put_wall"] = levels.put_wall
+                features["sg_abs_gamma"] = levels.abs_gamma
+
+            if hiro is not None:
+                features["sg_hiro_eod"] = hiro.cumulative_impact
+
+            if not features:
+                logger.info("SpotGamma EOD: no data available — skipping feature save")
+                return
+
+            date_str = now.strftime("%Y-%m-%d")
+            await feature_store.save_features("SPX", date_str, features)
+            logger.info(
+                "SpotGamma EOD: saved %d features to daily_features for %s",
+                len(features),
+                date_str,
+            )
+        except Exception as exc:
+            logger.error("SpotGamma EOD: feature save failed: %s", exc, exc_info=True)
+
     @tasks.loop(minutes=config.update_interval_minutes)
     async def market_loop(self) -> None:
         """Main background loop that runs every update_interval_minutes."""
@@ -495,11 +744,23 @@ class SchedulerCog(commands.Cog, name="Scheduler"):
             logger.debug("Skipping scheduler tick -- weekend")
             return
 
+        # Handle SpotGamma daily auth (8:00 AM ET)
+        await self._handle_spotgamma_auth()
+
         # Handle pre-market post
         await self._handle_premarket()
 
+        # Handle SpotGamma levels (pre-market at 9:15, then every 30 min)
+        await self._handle_spotgamma_levels()
+
+        # Handle SpotGamma HIRO (every 5 min during market hours)
+        await self._handle_spotgamma_hiro()
+
         # Handle post-market post
         await self._handle_postmarket()
+
+        # Handle SpotGamma EOD (16:10 ET — inject into daily_features)
+        await self._handle_spotgamma_eod()
 
         # Handle ML daily update (16:05 ET, after post-market)
         await self._handle_ml_daily_update()

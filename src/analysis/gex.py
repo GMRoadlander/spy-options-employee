@@ -41,6 +41,7 @@ class GEXResult:
     net_gex_by_strike: list[float] = field(
         default_factory=list
     )  # Net GEX per strike
+    gex_by_expiry: dict[str, float] | None = None  # Per-expiry net GEX breakdown
 
 
 def _compute_contract_gex(
@@ -213,6 +214,7 @@ def calculate_gex(
     strike_high = spot + lookback
 
     # Filter contracts
+    multi_expiry = expiry is None
     contracts = chain.contracts
     if expiry is not None:
         contracts = [c for c in contracts if c.expiry == expiry]
@@ -239,12 +241,20 @@ def calculate_gex(
     call_gex_map: dict[float, float] = {k: 0.0 for k in unique_strikes}
     put_gex_map: dict[float, float] = {k: 0.0 for k in unique_strikes}
 
+    # Track per-expiry net GEX when aggregating across all expirations
+    expiry_gex_map: dict[str, float] = {} if multi_expiry else {}
+
     for contract in contracts:
         gex_val = _compute_contract_gex(contract, spot, r)
         if contract.is_call:
             call_gex_map[contract.strike] += gex_val
         else:
             put_gex_map[contract.strike] += gex_val
+
+        # Accumulate per-expiry breakdown
+        if multi_expiry:
+            exp_key = contract.expiry.isoformat()
+            expiry_gex_map[exp_key] = expiry_gex_map.get(exp_key, 0.0) + gex_val
 
     # Build output lists
     strikes_list: list[float] = []
@@ -304,4 +314,5 @@ def calculate_gex(
         call_gex=call_gex_list,
         put_gex=put_gex_list,
         net_gex_by_strike=net_gex_list,
+        gex_by_expiry=expiry_gex_map if multi_expiry else None,
     )

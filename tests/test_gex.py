@@ -447,3 +447,230 @@ class TestCalculateGEX:
 
         # Different OI should produce different GEX values
         assert result_near.net_gex != result_far.net_gex
+
+
+# ===================================================================
+# Multi-expiry GEX aggregation tests
+# ===================================================================
+
+def make_multi_expiry_chain(
+    spot: float = 600.0,
+    strikes: list[float] | None = None,
+    expiry_days: list[int] | None = None,
+    oi_per_expiry: dict[int, tuple[list[int], list[int]]] | None = None,
+    iv: float = 0.15,
+) -> OptionsChain:
+    """Build an OptionsChain with contracts across multiple expirations.
+
+    Args:
+        spot: Underlying spot price.
+        strikes: Strike prices. Defaults to [595, 600, 605].
+        expiry_days: Days-to-expiry for each expiration. Defaults to [7, 14, 30].
+        oi_per_expiry: Dict mapping days_to_expiry -> (call_oi_list, put_oi_list).
+                       If None, uses 1000 OI for all.
+        iv: Implied volatility for all contracts.
+
+    Returns:
+        OptionsChain with contracts across all specified expirations.
+    """
+    if strikes is None:
+        strikes = [595.0, 600.0, 605.0]
+    if expiry_days is None:
+        expiry_days = [7, 14, 30]
+
+    contracts = []
+    for dte in expiry_days:
+        if oi_per_expiry and dte in oi_per_expiry:
+            oi_calls, oi_puts = oi_per_expiry[dte]
+        else:
+            oi_calls = [1000] * len(strikes)
+            oi_puts = [1000] * len(strikes)
+
+        for i, k in enumerate(strikes):
+            contracts.append(
+                make_contract(k, "call", open_interest=oi_calls[i],
+                              iv=iv, days_to_expiry=dte)
+            )
+            contracts.append(
+                make_contract(k, "put", open_interest=oi_puts[i],
+                              iv=iv, days_to_expiry=dte)
+            )
+
+    return OptionsChain(
+        ticker="SPY",
+        spot_price=spot,
+        timestamp=datetime.now(),
+        contracts=contracts,
+    )
+
+
+class TestMultiExpiryGEX:
+
+    @patch("src.analysis.gex.config")
+    def test_multi_expiry_returns_gex_by_expiry(self, mock_config):
+        """When expiry=None, gex_by_expiry should be a dict, not None."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        chain = make_multi_expiry_chain()
+        result = calculate_gex(chain)
+
+        assert result.gex_by_expiry is not None
+        assert isinstance(result.gex_by_expiry, dict)
+
+    @patch("src.analysis.gex.config")
+    def test_single_expiry_returns_none_gex_by_expiry(self, mock_config):
+        """When expiry is specified, gex_by_expiry should be None."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        chain = make_multi_expiry_chain()
+        target_expiry = date.today() + timedelta(days=7)
+        result = calculate_gex(chain, expiry=target_expiry)
+
+        assert result.gex_by_expiry is None
+
+    @patch("src.analysis.gex.config")
+    def test_gex_by_expiry_has_all_expirations(self, mock_config):
+        """gex_by_expiry should contain an entry for each expiration in the chain."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        expiry_days = [7, 14, 30]
+        chain = make_multi_expiry_chain(expiry_days=expiry_days)
+        result = calculate_gex(chain)
+
+        assert result.gex_by_expiry is not None
+        expected_keys = {
+            (date.today() + timedelta(days=d)).isoformat() for d in expiry_days
+        }
+        assert set(result.gex_by_expiry.keys()) == expected_keys
+
+    @patch("src.analysis.gex.config")
+    def test_gex_by_expiry_sums_to_net_gex(self, mock_config):
+        """Sum of all per-expiry GEX values should equal the aggregate net_gex."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        chain = make_multi_expiry_chain(
+            oi_per_expiry={
+                7: ([3000, 2000, 1000], [500, 1000, 2000]),
+                14: ([2000, 1500, 1000], [1000, 1500, 2000]),
+                30: ([1000, 1000, 1000], [1000, 1000, 1000]),
+            }
+        )
+        result = calculate_gex(chain)
+
+        assert result.gex_by_expiry is not None
+        expiry_sum = sum(result.gex_by_expiry.values())
+        assert expiry_sum == pytest.approx(result.net_gex, rel=1e-10)
+
+    @patch("src.analysis.gex.config")
+    def test_multi_expiry_aggregates_all_contracts(self, mock_config):
+        """With expiry=None, net_gex should include contributions from all expirations."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        expiry_days = [7, 30]
+        chain = make_multi_expiry_chain(expiry_days=expiry_days)
+
+        # Calculate individual expiry results
+        result_7 = calculate_gex(chain, expiry=date.today() + timedelta(days=7))
+        result_30 = calculate_gex(chain, expiry=date.today() + timedelta(days=30))
+        result_all = calculate_gex(chain)
+
+        # Aggregate should equal sum of individual expiry results
+        assert result_all.net_gex == pytest.approx(
+            result_7.net_gex + result_30.net_gex, rel=1e-10
+        )
+
+    @patch("src.analysis.gex.config")
+    def test_gex_by_expiry_matches_individual_runs(self, mock_config):
+        """Each per-expiry value should match calculate_gex run with that expiry."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        expiry_days = [7, 14, 30]
+        chain = make_multi_expiry_chain(
+            expiry_days=expiry_days,
+            oi_per_expiry={
+                7: ([5000, 3000, 1000], [500, 1000, 3000]),
+                14: ([2000, 2000, 2000], [2000, 2000, 2000]),
+                30: ([1000, 1000, 5000], [3000, 1000, 500]),
+            },
+        )
+        result_all = calculate_gex(chain)
+
+        for dte in expiry_days:
+            exp_date = date.today() + timedelta(days=dte)
+            result_single = calculate_gex(chain, expiry=exp_date)
+            assert result_all.gex_by_expiry is not None
+            assert result_all.gex_by_expiry[exp_date.isoformat()] == pytest.approx(
+                result_single.net_gex, rel=1e-10
+            )
+
+    @patch("src.analysis.gex.config")
+    def test_single_expiry_in_chain_produces_one_entry(self, mock_config):
+        """A chain with only one expiration should have exactly one gex_by_expiry entry."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        chain = make_multi_expiry_chain(expiry_days=[14])
+        result = calculate_gex(chain)
+
+        assert result.gex_by_expiry is not None
+        assert len(result.gex_by_expiry) == 1
+        exp_key = (date.today() + timedelta(days=14)).isoformat()
+        assert exp_key in result.gex_by_expiry
+
+    @patch("src.analysis.gex.config")
+    def test_empty_chain_gex_by_expiry_not_set(self, mock_config):
+        """An empty chain should return None for gex_by_expiry (early return path)."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        chain = OptionsChain(
+            ticker="SPY",
+            spot_price=600.0,
+            timestamp=datetime.now(),
+            contracts=[],
+        )
+        result = calculate_gex(chain)
+
+        assert result.gex_by_expiry is None
+        assert result.net_gex == 0.0
+
+    @patch("src.analysis.gex.config")
+    def test_backward_compat_default_gex_by_expiry(self, mock_config):
+        """GEXResult created without gex_by_expiry should default to None."""
+        result = GEXResult(
+            net_gex=100.0,
+            gamma_flip=600.0,
+            gamma_ceiling=610.0,
+            gamma_floor=590.0,
+            squeeze_probability=0.3,
+        )
+        assert result.gex_by_expiry is None
+
+    @patch("src.analysis.gex.config")
+    def test_multi_expiry_preserves_strike_aggregation(self, mock_config):
+        """With multiple expiries sharing strikes, per-strike GEX should aggregate correctly."""
+        mock_config.risk_free_rate = 0.05
+        mock_config.gex_lookback_strikes = 50
+
+        # Both expiries use the same strikes — per-strike lists should combine them
+        chain = make_multi_expiry_chain(
+            strikes=[600.0],
+            expiry_days=[7, 30],
+            oi_per_expiry={
+                7: ([2000], [1000]),
+                30: ([1000], [2000]),
+            },
+        )
+        result = calculate_gex(chain)
+
+        # Should have one unique strike
+        assert len(result.strikes) == 1
+        assert result.strikes[0] == 600.0
+        # net_gex_by_strike should aggregate across both expiries
+        assert result.net_gex_by_strike[0] == pytest.approx(result.net_gex, rel=1e-10)

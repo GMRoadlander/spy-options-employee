@@ -30,6 +30,10 @@ if TYPE_CHECKING:
     from src.ai.strategy_parser import StrategyParser
     from src.data.data_manager import DataManager
     from src.data.historical_store import HistoricalStore
+    from src.data.spotgamma_auth import SpotGammaAuthBroker
+    from src.data.spotgamma_client import SpotGammaClient
+    from src.data.spotgamma_scraper import SpotGammaScraper
+    from src.data.spotgamma_store import SpotGammaStore
     from src.db.signal_log import SignalLogger
     from src.db.store import Store
     from src.ml.anomaly import AnomalyManager
@@ -76,6 +80,12 @@ class ServiceRegistry:
     reasoning_engine: ReasoningEngine | None = None
     reasoning_manager: ReasoningManager | None = None
     learning_manager: LearningManager | None = None
+
+    # Phase 4 — SpotGamma (optional, requires store)
+    spotgamma_auth: SpotGammaAuthBroker | None = None
+    spotgamma_client: SpotGammaClient | None = None
+    spotgamma_scraper: SpotGammaScraper | None = None
+    spotgamma_store: SpotGammaStore | None = None
 
     # Phase 4 — Paper Trading (optional, require store + strategy_manager)
     paper_engine: PaperTradingEngine | None = None

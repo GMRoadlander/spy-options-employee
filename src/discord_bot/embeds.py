@@ -17,6 +17,7 @@ from src.analysis.gex import GEXResult
 from src.analysis.max_pain import MaxPainResult
 from src.analysis.pcr import PCRResult
 from src.analysis.strike_intel import StrikeIntelResult
+from src.data.spotgamma_models import SpotGammaLevels
 
 logger = logging.getLogger(__name__)
 
@@ -2156,4 +2157,182 @@ def build_ml_health_embed(health: dict) -> discord.Embed:
         )
 
     embed.set_footer(text="SPY Options Employee | ML Health")
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# SpotGamma embeds
+# ---------------------------------------------------------------------------
+
+
+def build_spotgamma_levels_embed(levels: SpotGammaLevels) -> discord.Embed:
+    """Build an embed showing SpotGamma key levels.
+
+    Args:
+        levels: A :class:`SpotGammaLevels` instance.
+
+    Returns:
+        Discord Embed with all five levels, source, and timestamp.
+    """
+    embed = discord.Embed(
+        title=f"SpotGamma Levels -- {levels.ticker}",
+        description="Key gamma/delta levels from SpotGamma",
+        color=COLOR_INFO,
+        timestamp=levels.timestamp,
+    )
+
+    embed.add_field(
+        name="Call Wall",
+        value=_fmt_price(levels.call_wall),
+        inline=True,
+    )
+    embed.add_field(
+        name="Put Wall",
+        value=_fmt_price(levels.put_wall),
+        inline=True,
+    )
+    embed.add_field(
+        name="Vol Trigger",
+        value=_fmt_price(levels.vol_trigger),
+        inline=True,
+    )
+    embed.add_field(
+        name="Hedge Wall",
+        value=_fmt_price(levels.hedge_wall),
+        inline=True,
+    )
+    embed.add_field(
+        name="Abs Gamma",
+        value=_fmt_price(levels.abs_gamma),
+        inline=True,
+    )
+    embed.add_field(
+        name="Source",
+        value=levels.source,
+        inline=True,
+    )
+
+    embed.set_footer(text=f"SPY Options Employee | {levels.ticker}")
+    return embed
+
+
+def build_spotgamma_comparison_embed(
+    sg_levels: SpotGammaLevels,
+    gex_result: GEXResult,
+    spot_price: float,
+) -> discord.Embed:
+    """Build a side-by-side comparison of SpotGamma vs our GEX levels.
+
+    Comparisons:
+        - Our gamma_ceiling  vs  SG Call Wall
+        - Our gamma_floor    vs  SG Put Wall
+        - Our gamma_flip     vs  SG Vol Trigger
+
+    Agreement threshold: within 10 points -> green, otherwise red.
+
+    Args:
+        sg_levels: SpotGamma levels to compare.
+        gex_result: Our GEX analysis result.
+        spot_price: Current spot price for context.
+
+    Returns:
+        Discord Embed with comparison table.
+    """
+    threshold = 10.0  # points of agreement
+
+    def _compare_line(label: str, our_val: float | None, sg_val: float) -> str:
+        """Build a single comparison line with agreement indicator."""
+        if our_val is None:
+            return f"**{label}**\n  Ours: N/A | SG: {_fmt_price(sg_val)}\n  [NO DATA]"
+
+        diff = abs(our_val - sg_val)
+        if diff <= threshold:
+            indicator = "[AGREE]"
+        else:
+            indicator = "[DIVERGE]"
+
+        return (
+            f"**{label}**\n"
+            f"  Ours: {_fmt_price(our_val)} | SG: {_fmt_price(sg_val)}\n"
+            f"  Diff: {diff:.1f} pts  {indicator}"
+        )
+
+    # Count agreements for overall color
+    comparisons = [
+        (gex_result.gamma_ceiling, sg_levels.call_wall),
+        (gex_result.gamma_floor, sg_levels.put_wall),
+        (gex_result.gamma_flip, sg_levels.vol_trigger),
+    ]
+    agreements = sum(
+        1 for ours, sg in comparisons
+        if ours is not None and abs(ours - sg) <= threshold
+    )
+
+    if agreements >= 2:
+        color = COLOR_BULLISH  # mostly agree -- high confidence
+    elif agreements == 1:
+        color = COLOR_NEUTRAL  # mixed
+    else:
+        color = COLOR_BEARISH  # mostly diverge -- investigate
+
+    embed = discord.Embed(
+        title=f"GEX vs SpotGamma -- {sg_levels.ticker}",
+        description=(
+            f"Spot: {_fmt_price(spot_price)} | "
+            f"Agreement: {agreements}/3 | "
+            f"Threshold: {threshold:.0f} pts"
+        ),
+        color=color,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    # Ceiling vs Call Wall
+    embed.add_field(
+        name="Resistance",
+        value=_compare_line(
+            "Gamma Ceiling vs Call Wall",
+            gex_result.gamma_ceiling,
+            sg_levels.call_wall,
+        ),
+        inline=False,
+    )
+
+    # Floor vs Put Wall
+    embed.add_field(
+        name="Support",
+        value=_compare_line(
+            "Gamma Floor vs Put Wall",
+            gex_result.gamma_floor,
+            sg_levels.put_wall,
+        ),
+        inline=False,
+    )
+
+    # Flip vs Vol Trigger
+    embed.add_field(
+        name="Gamma Flip / Vol Trigger",
+        value=_compare_line(
+            "Gamma Flip vs Vol Trigger",
+            gex_result.gamma_flip,
+            sg_levels.vol_trigger,
+        ),
+        inline=False,
+    )
+
+    # Extra SG levels not in our analysis
+    embed.add_field(
+        name="SpotGamma Only",
+        value=(
+            f"Hedge Wall: {_fmt_price(sg_levels.hedge_wall)}\n"
+            f"Abs Gamma: {_fmt_price(sg_levels.abs_gamma)}"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=(
+            f"SPY Options Employee | SG source: {sg_levels.source} | "
+            f"SG date: {sg_levels.timestamp.strftime('%Y-%m-%d')}"
+        ),
+    )
     return embed

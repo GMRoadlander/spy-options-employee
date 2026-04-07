@@ -94,6 +94,12 @@ class Config:
     # Unusual Whales (institutional flow + dark pool — Phase 3)
     unusual_whales_api_key: str = os.getenv("UNUSUAL_WHALES_API_KEY", "")
 
+    # SpotGamma (browser-based auth — Phase 4+)
+    spotgamma_email: str = os.getenv("SPOTGAMMA_EMAIL", "")
+    spotgamma_password: str = os.getenv("SPOTGAMMA_PASSWORD", "")
+    spotgamma_enabled: bool = os.getenv("SPOTGAMMA_ENABLED", "false").lower() == "true"
+    spotgamma_auth_dir: str = os.getenv("SPOTGAMMA_AUTH_DIR", "data/spotgamma_auth")
+
     # Paper Trading (Phase 4)
     paper_starting_capital: float = float(os.getenv("PAPER_STARTING_CAPITAL", "100000"))
     paper_slippage_pct: float = float(os.getenv("PAPER_SLIPPAGE_PCT", "0.10"))
