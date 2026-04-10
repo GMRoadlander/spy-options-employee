@@ -1,0 +1,144 @@
+{
+  "ticker": "SPY",
+  "spot_price": 679.5801,
+  "timestamp": "2026-04-09T17:06:25",
+  "gex": {
+    "net_gex": 0.0,
+    "gamma_flip": null,
+    "gamma_ceiling": null,
+    "gamma_floor": null,
+    "squeeze_probability": 0.2591926006867151,
+    "gex_by_expiry": null
+  },
+  "max_pain": {
+    "price": 671.0,
+    "distance_pct": 1.2625590419731265
+  },
+  "pcr": {
+    "volume_pcr": 1.323990750858394,
+    "oi_pcr": 1.730934863732027,
+    "signal": "extreme_fear",
+    "dealer_positioning": "long_gamma"
+  },
+  "key_levels": [
+    {
+      "price": 671.0,
+      "type": "max_pain",
+      "significance": 0.8
+    },
+    {
+      "price": 680.0,
+      "type": "high_oi_call",
+      "significance": 0.7
+    },
+    {
+      "price": 650.0,
+      "type": "high_oi_put",
+      "significance": 0.7
+    },
+    {
+      "price": 660.0,
+      "type": "high_oi_put",
+      "significance": 0.671
+    },
+    {
+      "price": 683.0,
+      "type": "high_oi_call",
+      "significance": 0.664
+    },
+    {
+      "price": 684.0,
+      "type": "high_oi_call",
+      "significance": 0.654
+    },
+    {
+      "price": 670.0,
+      "type": "high_oi_put",
+      "significance": 0.623
+    },
+    {
+      "price": 659.0,
+      "type": "high_oi_put",
+      "significance": 0.609
+    },
+    {
+      "price": 685.0,
+      "type": "high_oi_call",
+      "significance": 0.606
+    },
+    {
+      "price": 655.0,
+      "type": "high_oi_put",
+      "significance": 0.601
+    },
+    {
+      "price": 675.0,
+      "type": "high_oi_call",
+      "significance": 0.575
+    }
+  ],
+  "optimal_puts": [
+    {
+      "strike": 679.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.4622,
+      "gex_support": "against"
+    },
+    {
+      "strike": 678.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.4077,
+      "gex_support": "against"
+    },
+    {
+      "strike": 677.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.3624,
+      "gex_support": "against"
+    },
+    {
+      "strike": 676.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.327,
+      "gex_support": "against"
+    },
+    {
+      "strike": 675.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.3025,
+      "gex_support": "against"
+    }
+  ],
+  "optimal_calls": [
+    {
+      "strike": 680.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.4784,
+      "gex_support": "against"
+    },
+    {
+      "strike": 681.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.4204,
+      "gex_support": "against"
+    },
+    {
+      "strike": 682.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.3677,
+      "gex_support": "against"
+    },
+    {
+      "strike": 683.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.3252,
+      "gex_support": "against"
+    },
+    {
+      "strike": 684.0,
+      "expiry": "2026-04-09",
+      "p_itm": 0.287,
+      "gex_support": "against"
+    }
+  ]
+}
