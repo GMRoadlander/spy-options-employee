@@ -1,39 +1,32 @@
-"""SpotGamma dashboard API client for GEX levels and flow data.
+"""SpotGamma API client for GEX levels and flow data.
 
-Direct HTTP client that uses SpotGammaAuthBroker for authentication and
-fetches key dealer positioning data: GEX levels, HIRO indicator, Equity
-Hub, TRACE heatmap, and Founder's Notes.
+Direct HTTP client against api.spotgamma.com (Alpha tier). Uses
+SpotGammaAuthBroker for JWT extraction (Authorization: Bearer <sgToken>)
+and fetches dealer positioning data: per-equity gamma data, HIRO,
+user profile.
 
-Follows the same async aiohttp pattern established by ORATSClient and
-PolygonClient, with additional anti-detection measures (jitter, browser
-User-Agent) since this scrapes a dashboard rather than hitting an
-official API.
+Endpoints discovered via dashboard recon on 2026-04-28 (Premier/Alpha):
+  - /v3/equitiesBySyms?syms=SPX  -> Call Wall (cws), Put Wall (pws),
+    Abs Gamma (keyg), Max Future Strike (maxfs), per-strike gamma
+    curves, IV rank, sig (1d implied move), ~90 fields total
+  - /v6/running_hiro             -> 401-symbol HIRO snapshot with
+    low/high bands across 1/5/20-day windows
+  - /v1/me/user                  -> account profile (sanity check)
+  - /v1/me/refresh               -> JWT refresh
 
-Key data:
-  - Levels: Call Wall, Put Wall, Vol Trigger, Gamma Flip, etc.
-  - HIRO: Hedging Impact & Real-time Options indicator
-  - Equity Hub: support/resistance levels from dealer positioning
-  - TRACE: institutional flow heatmap
-  - Notes: Founder's Notes daily commentary
+Endpoints captured in recon but currently 403 from raw aiohttp (likely
+TLS fingerprint or signed-header gating; SPA can call them, we cannot
+yet -- /v3/equitiesBySyms covers their data anyway):
+  - /home/keyLevels
+  - /v1/eh_symbols and /synth_oi/v1/eh_symbols
+  - /v1/futures/realtime
 
-Rate limits:
-  - 10 requests per minute (conservative default — dashboard, not API)
+Rate limits: 30 req/min default (real API, not scraping). Jitter
+disabled by default since this is an authenticated API call, not
+dashboard scraping.
 
-Anti-detection:
-  - Randomized jitter (0-30s) before each request (configurable)
-  - Realistic browser User-Agent header
-  - Auth via browser-extracted cookies/JWT (see spotgamma_auth.py)
-
-Requires:
-  pip install aiohttp
-
-Environment:
-  SPOTGAMMA_EMAIL    -- account email (used by auth broker)
-  SPOTGAMMA_PASSWORD -- account password (used by auth broker)
-  SPOTGAMMA_ENABLED  -- "true" to activate
-
-NOTE: All endpoint paths are PLACEHOLDERS — they will be updated on
-Day 1 of the SpotGamma subscription when we can inspect real traffic.
+Auth: JWT via SpotGammaAuthBroker. Token sourced from localStorage
+'sgToken' key in the persistent Playwright context.
 """
 
 from __future__ import annotations
@@ -93,18 +86,19 @@ class SpotGammaClient:
         levels = await client.get_levels("SPX")
         await client.close()
 
-    All endpoint paths are **placeholders** — update on Day 1 when we can
-    inspect real network traffic from the SpotGamma dashboard.
+    Endpoint paths verified live on 2026-04-28 against the Alpha tier
+    via dashboard network reconnaissance (see scripts/spotgamma_recon.py
+    and scripts/spotgamma_auth_probe.py).
     """
 
-    BASE_URL = "https://dashboard.spotgamma.com"
+    BASE_URL = "https://api.spotgamma.com"
 
     def __init__(
         self,
         auth_broker: SpotGammaAuthBroker,
         session: aiohttp.ClientSession | None = None,
-        requests_per_minute: int = 10,
-        max_jitter_seconds: float = 30.0,
+        requests_per_minute: int = 30,
+        max_jitter_seconds: float = 0.0,
     ) -> None:
         self._auth_broker = auth_broker
         self._session = session
@@ -118,71 +112,91 @@ class SpotGammaClient:
     # ------------------------------------------------------------------
 
     async def get_levels(self, ticker: str = "SPX") -> dict | None:
-        """Fetch key GEX levels (Call Wall, Put Wall, Vol Trigger, etc.).
+        """Fetch key GEX levels via /v3/equitiesBySyms.
 
-        Returns raw JSON dict. Parsing to SpotGammaLevels happens in the
-        caller/store layer.
+        The /home/keyLevels endpoint returns 403 to raw aiohttp; the
+        equivalent (and richer) data lives in /v3/equitiesBySyms which
+        accepts comma-separated symbols and returns ~90 fields per symbol
+        including cws (Call Wall), pws (Put Wall), keyg (Abs Gamma),
+        maxfs (Max Future Strike), full per-strike gamma curves, IV rank,
+        sig (1d implied move), and prev-day comparisons.
 
-        Endpoint path is a PLACEHOLDER — update on Day 1.
+        Caller maps fields via spotgamma_models.parse_levels_from_v3().
 
         Args:
             ticker: Underlying ticker (default "SPX").
 
         Returns:
-            Raw JSON dict or None on error.
+            Raw JSON dict {ticker_upper: {...90 fields...}, ...} or None on error.
         """
-        # PLACEHOLDER endpoint — update on Day 1
-        return await self._request("GET", f"/api/levels/{ticker.upper()}")
+        sym = ticker.upper()
+        return await self._request("GET", f"/v3/equitiesBySyms?syms={sym}")
 
     async def get_hiro(self, ticker: str = "SPX") -> dict | None:
-        """Fetch HIRO (Hedging Impact & Real-time Options) indicator data.
+        """Fetch HIRO snapshot via /v6/running_hiro.
 
-        Endpoint path is a PLACEHOLDER — update on Day 1.
+        Returns ALL ~401 symbols in one response (147KB). Caller filters
+        for the ticker of interest. Each row has low/high bands across
+        1/5/20-day windows: low1, high1, low5, high5, low20, high20.
 
         Args:
-            ticker: Underlying ticker (default "SPX").
+            ticker: Underlying ticker (default "SPX") -- used only to
+                filter the response client-side; not sent to the server.
 
         Returns:
-            Raw JSON dict or None on error.
+            Raw JSON list of all symbols, or None on error. Caller filters.
         """
-        # PLACEHOLDER endpoint — update on Day 1
-        return await self._request("GET", f"/api/hiro/{ticker.upper()}")
+        # The server returns ALL symbols regardless of ticker arg.
+        # We pass through; the caller is responsible for filtering.
+        _ = ticker  # documented intent: ticker filter happens at caller
+        return await self._request("GET", "/v6/running_hiro")
 
     async def get_equity_hub(self, ticker: str = "SPX") -> dict | None:
-        """Fetch Equity Hub levels for a ticker.
+        """Fetch Equity Hub data via /v3/equitiesBySyms.
 
-        Endpoint path is a PLACEHOLDER — update on Day 1.
+        Same endpoint as get_levels() -- the v3/equitiesBySyms response
+        IS the Equity Hub data for a single symbol. Multi-symbol calls
+        accept comma-separated `syms` (e.g. ?syms=SPY,AAPL,SPX).
 
         Args:
-            ticker: Underlying ticker (default "SPX").
+            ticker: Underlying ticker or comma-separated list.
 
         Returns:
-            Raw JSON dict or None on error.
+            Raw JSON dict keyed by symbol, or None on error.
         """
-        # PLACEHOLDER endpoint — update on Day 1
-        return await self._request("GET", f"/api/equity-hub/{ticker.upper()}")
+        return await self._request("GET", f"/v3/equitiesBySyms?syms={ticker.upper()}")
+
+    async def get_user(self) -> dict | None:
+        """Fetch authenticated user profile via /v1/me/user.
+
+        Useful as a sanity check / token-validity probe -- if this 401s,
+        the JWT is expired and the auth broker should re-authenticate.
+
+        Returns:
+            Raw JSON dict with account fields, or None on error.
+        """
+        return await self._request("GET", "/v1/me/user")
 
     async def get_trace(self) -> dict | None:
-        """Fetch TRACE heatmap data.
+        """TRACE heatmap is a canvas/WebGL visualization, no JSON endpoint.
 
-        Endpoint path is a PLACEHOLDER — update on Day 1.
-
-        Returns:
-            Raw JSON dict or None on error.
+        Returns None unconditionally. Kept for API compatibility with
+        existing callers and tests; SpotGamma does not expose TRACE
+        data programmatically.
         """
-        # PLACEHOLDER endpoint — update on Day 1
-        return await self._request("GET", "/api/trace")
+        logger.debug("get_trace() called -- TRACE is dashboard-only, returning None")
+        return None
 
     async def get_notes(self) -> dict | None:
-        """Fetch latest Founder's Notes.
+        """Founder's Notes are not exposed via the API surface we found.
 
-        Endpoint path is a PLACEHOLDER — update on Day 1.
-
-        Returns:
-            Raw JSON dict or None on error.
+        The /home/contentForCategory endpoint exists but returns
+        glossary/tooltip content, not Founder's Notes. Notes appear to
+        be web-rendered prose at spotgamma.com (subscriber-gated). Kept
+        as a stub for API compatibility.
         """
-        # PLACEHOLDER endpoint — update on Day 1
-        return await self._request("GET", "/api/notes")
+        logger.debug("get_notes() called -- no API endpoint found, returning None")
+        return None
 
     # ------------------------------------------------------------------
     # Core request method

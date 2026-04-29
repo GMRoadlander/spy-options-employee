@@ -239,62 +239,62 @@ class TestEndpoints:
         with patch.object(client, "_request", return_value=expected) as mock_req:
             result = await client.get_levels()
 
-        mock_req.assert_called_once_with("GET", "/api/levels/SPX")
+        mock_req.assert_called_once_with("GET", "/v3/equitiesBySyms?syms=SPX")
         assert result == expected
 
     @pytest.mark.asyncio
     async def test_get_levels_custom_ticker(self):
-        """get_levels('SPY') calls _request with /api/levels/SPY."""
+        """get_levels('spy') calls _request with /v3/equitiesBySyms?syms=SPY."""
         client, _ = _make_client()
 
         with patch.object(client, "_request", return_value={"ok": True}) as mock_req:
             await client.get_levels("spy")
 
-        mock_req.assert_called_once_with("GET", "/api/levels/SPY")
+        mock_req.assert_called_once_with("GET", "/v3/equitiesBySyms?syms=SPY")
 
     @pytest.mark.asyncio
     async def test_get_hiro(self):
-        """get_hiro calls _request with /api/hiro/{ticker}."""
+        """get_hiro calls _request with /v6/running_hiro (server returns all symbols)."""
         client, _ = _make_client()
 
-        with patch.object(client, "_request", return_value={"hiro": 1.5}) as mock_req:
+        with patch.object(client, "_request", return_value=[{"symbol": "SPX"}]) as mock_req:
             result = await client.get_hiro("SPX")
 
-        mock_req.assert_called_once_with("GET", "/api/hiro/SPX")
-        assert result == {"hiro": 1.5}
+        mock_req.assert_called_once_with("GET", "/v6/running_hiro")
+        assert result == [{"symbol": "SPX"}]
 
     @pytest.mark.asyncio
     async def test_get_equity_hub(self):
-        """get_equity_hub calls _request with /api/equity-hub/{ticker}."""
+        """get_equity_hub calls _request with /v3/equitiesBySyms?syms={ticker}."""
         client, _ = _make_client()
 
-        with patch.object(client, "_request", return_value={"levels": []}) as mock_req:
+        with patch.object(client, "_request", return_value={"SPX": {}}) as mock_req:
             result = await client.get_equity_hub("SPX")
 
-        mock_req.assert_called_once_with("GET", "/api/equity-hub/SPX")
-        assert result == {"levels": []}
+        mock_req.assert_called_once_with("GET", "/v3/equitiesBySyms?syms=SPX")
+        assert result == {"SPX": {}}
 
     @pytest.mark.asyncio
     async def test_get_trace(self):
-        """get_trace calls _request with /api/trace."""
+        """get_trace returns None without calling _request (TRACE has no JSON endpoint)."""
         client, _ = _make_client()
 
-        with patch.object(client, "_request", return_value={"heatmap": []}) as mock_req:
+        with patch.object(client, "_request") as mock_req:
             result = await client.get_trace()
 
-        mock_req.assert_called_once_with("GET", "/api/trace")
-        assert result == {"heatmap": []}
+        mock_req.assert_not_called()
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_get_notes(self):
-        """get_notes calls _request with /api/notes."""
+        """get_notes returns None without calling _request (no API endpoint found)."""
         client, _ = _make_client()
 
-        with patch.object(client, "_request", return_value={"text": "Bullish"}) as mock_req:
+        with patch.object(client, "_request") as mock_req:
             result = await client.get_notes()
 
-        mock_req.assert_called_once_with("GET", "/api/notes")
-        assert result == {"text": "Bullish"}
+        mock_req.assert_not_called()
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

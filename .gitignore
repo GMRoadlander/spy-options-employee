@@ -50,3 +50,6 @@ data/ml_models/
 
 # SpotGamma browser auth state (cookies, localStorage)
 data/spotgamma_auth/
+
+# SpotGamma recon raw responses (may contain account-specific data)
+data/spotgamma_recon/

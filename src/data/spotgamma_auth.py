@@ -71,9 +71,16 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 _LOGIN_URL = "https://spotgamma.com/login/"
-_DASHBOARD_URL_FRAGMENT = "/dashboard"
+# After login, dashboard.spotgamma.com is the SPA host. The SPA's first
+# real route is /home (or /home?eh-model=legacy), NOT /dashboard. We
+# match on the host so any post-login URL counts as success. Verified
+# live on 2026-04-28.
+_DASHBOARD_URL_FRAGMENT = "dashboard.spotgamma.com"
 
-# PLACEHOLDER selectors -- update on Day 1 of subscription
+# Login form selectors. Manual login establishes the persistent context;
+# subsequent runs reuse it without filling the form. Auto-fill is
+# best-effort -- if the live form HTML diverges from these guesses, the
+# user is prompted to log in by hand in the visible browser window.
 _EMAIL_SELECTOR = 'input[name="email"], input[type="email"], #email'
 _PASSWORD_SELECTOR = 'input[name="password"], input[type="password"], #password'
 _SUBMIT_SELECTOR = 'button[type="submit"], input[type="submit"], #login-submit'
@@ -177,15 +184,38 @@ class SpotGammaAuthBroker:
             if _STEALTH_AVAILABLE and stealth_async is not None:
                 await stealth_async(page)
 
-            # Navigate to login page
+            # Strategy 1: try the dashboard first. If the persistent context
+            # already holds a valid session (the common steady-state case),
+            # sgToken will be in localStorage and we can skip the login form
+            # entirely. Verified live on 2026-04-28.
+            try:
+                await page.goto(
+                    f"https://{_DASHBOARD_URL_FRAGMENT}/",
+                    timeout=_NAV_TIMEOUT_MS,
+                    wait_until="domcontentloaded",
+                )
+                # Give the SPA a moment to read sgToken from disk into localStorage
+                import asyncio as _asyncio
+                await _asyncio.sleep(2)
+                self._auth_headers = await self._extract_auth(page)
+                if self._auth_headers:
+                    logger.info("SpotGamma session reused from persistent context")
+                    self._last_auth_time = time.monotonic()
+                    await page.close()
+                    return self._auth_headers
+            except Exception as exc:
+                logger.debug("Dashboard probe failed (%s) -- falling back to login form", exc)
+
+            # Strategy 2: no live session -- fill the login form. Selectors
+            # are best-effort; if they don't match, the user must log in
+            # manually once via scripts/spotgamma_recon.py to seed the
+            # persistent context. Subsequent runs will hit Strategy 1.
             await page.goto(_LOGIN_URL, timeout=_NAV_TIMEOUT_MS, wait_until="domcontentloaded")
 
-            # Fill credentials -- PLACEHOLDER selectors
             await page.fill(_EMAIL_SELECTOR, self._email)
             await page.fill(_PASSWORD_SELECTOR, self._password)
             await page.click(_SUBMIT_SELECTOR)
 
-            # Wait for dashboard redirect (indicates successful login)
             try:
                 await page.wait_for_url(
                     f"**{_DASHBOARD_URL_FRAGMENT}*",
@@ -194,10 +224,11 @@ class SpotGammaAuthBroker:
             except Exception as exc:
                 raise SpotGammaAuthError(
                     f"Login failed -- did not redirect to dashboard. "
-                    f"Current URL: {page.url}"
+                    f"Current URL: {page.url}. "
+                    f"If selectors changed, log in manually once via "
+                    f"scripts/spotgamma_recon.py to seed the persistent context."
                 ) from exc
 
-            # Extract auth tokens
             self._auth_headers = await self._extract_auth(page)
             self._last_auth_time = time.monotonic()
 
@@ -266,19 +297,25 @@ class SpotGammaAuthBroker:
         logger.debug("SpotGamma browser context launched (auth_dir=%s)", self._auth_dir)
 
     async def _extract_auth(self, page: Any) -> dict[str, str]:
-        """Extract auth credentials from cookies and localStorage.
+        """Extract auth credentials from localStorage (preferred) or cookies.
 
-        Tries two strategies in order:
-          1. JWT in localStorage (``Authorization: Bearer <token>``)
-          2. Session cookies (``Cookie: name=value; ...``)
+        Strategy 1 (preferred): JWT from localStorage key 'sgToken'.
+        Verified live on 2026-04-28: the SpotGamma Alpha SPA stores its
+        Bearer JWT in localStorage under the key 'sgToken' (camelCase,
+        ~632 chars). Other keys checked as fallbacks in case SpotGamma
+        renames in future. Returns ``Authorization: Bearer <token>``.
+
+        Strategy 2 (fallback): Session cookies. Used only if no JWT
+        is found in localStorage. Returns ``Cookie: name=value; ...``.
 
         Returns a headers dict ready for aiohttp.
         """
         headers: dict[str, str] = {}
 
-        # Strategy 1: JWT from localStorage
-        # PLACEHOLDER key names -- update on Day 1
-        for key in ("token", "jwt", "auth_token", "access_token", "sg_token"):
+        # Strategy 1: JWT from localStorage. 'sgToken' is the actual
+        # key SpotGamma's dashboard SPA uses; the others are defensive
+        # fallbacks in case of future renames.
+        for key in ("sgToken", "token", "jwt", "auth_token", "access_token", "sg_token"):
             try:
                 token = await page.evaluate(f"localStorage.getItem('{key}')")
                 if token:
@@ -288,7 +325,7 @@ class SpotGammaAuthBroker:
             except Exception:
                 continue
 
-        # Strategy 2: cookies
+        # Strategy 2: cookies (fallback only).
         cookies = await self._context.cookies(_LOGIN_URL.rstrip("/"))
         if cookies:
             cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)

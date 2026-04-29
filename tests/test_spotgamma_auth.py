@@ -82,12 +82,12 @@ class TestAuthenticate:
 
     @pytest.mark.asyncio
     async def test_successful_login_jwt(self):
-        """Successful login extracting a JWT from localStorage."""
+        """Persistent context already has a JWT -- skip login form, reuse session."""
         from src.data.spotgamma_auth import SpotGammaAuthBroker
 
         page = _make_mock_page()
-        # Simulate JWT found in localStorage
-        page.evaluate = AsyncMock(side_effect=lambda expr: "fake-jwt-token" if "token" in expr else None)
+        # Simulate JWT already present in localStorage (persistent context active)
+        page.evaluate = AsyncMock(side_effect=lambda expr: "fake-jwt-token" if "token" in expr.lower() else None)
 
         ctx = _make_mock_context(page)
         pw = _make_mock_playwright(ctx)
@@ -102,12 +102,8 @@ class TestAuthenticate:
 
         assert headers.get("Authorization") == "Bearer fake-jwt-token"
         assert broker.is_authenticated is True
-        page.fill.assert_any_await(
-            'input[name="email"], input[type="email"], #email', "user@example.com"
-        )
-        page.fill.assert_any_await(
-            'input[name="password"], input[type="password"], #password', "secret"
-        )
+        # New behavior: dashboard probe succeeded; login form was never filled.
+        page.fill.assert_not_called()
         page.close.assert_awaited_once()
 
         await broker.close()

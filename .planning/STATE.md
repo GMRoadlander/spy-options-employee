@@ -5,14 +5,14 @@
 See: .planning/PROJECT.md (updated 2026-02-24)
 
 **Core value:** Rigorous strategy validation that prevents overfitting
-**Current focus:** v1.0 shipped — planning next milestone
+**Current focus:** Post-v1.0 SpotGamma Alpha integration (live API ingestion wired)
 
 ## Current
 
-- **Milestone**: 1.0 — SHIPPED 2026-02-24
-- **Phase**: All complete (5 phases, 23 plans)
-- **Status**: v1.0 milestone archived. Ready for next milestone planning.
-- **Last updated**: 2026-02-24
+- **Milestone**: 1.0 SHIPPED 2026-02-24; post-v1.0 work in flight (no formal v1.1 milestone defined yet)
+- **Phase**: SpotGamma Alpha integration -- Day-1 wiring COMPLETE 2026-04-28
+- **Status**: Real SpotGamma API ingestion live and tested (Alpha tier, api.spotgamma.com, JWT Bearer auth via persistent Playwright context). 162/162 SpotGamma tests pass; live integration test pulls real SPX Call Wall=7200 / Put Wall=6800 / Abs Gamma=7000 / SG 1d implied move=0.69% / IV rank=28.81% via /v3/equitiesBySyms; HIRO ingests 401 symbols via /v6/running_hiro. Two endpoints (/home/keyLevels, /v1/eh_symbols) return 403 from raw aiohttp (likely TLS fingerprint or signed-header gating) but their data is fully covered by /v3/equitiesBySyms. DB store schema migration for new fields (max_future_strike, sg_implied_1d_move, spot, iv_rank) still pending.
+- **Last updated**: 2026-04-28
 
 ## Phase Progress
 
@@ -22,7 +22,8 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 | 2 | Strategy Research Engine | complete (3/3 plans) |
 | 2.1 | Code Review Fixes | complete (1/1 plans) |
 | 3 | ML Intelligence Layer | complete (9/9 plans) |
-| 4 | Paper Trading & Validation | complete (8/8 plans) — FINAL PHASE |
+| 4 | Paper Trading & Validation | complete (8/8 plans) — FINAL PHASE of v1.0 |
+| post-v1.0 | SpotGamma Alpha integration | wiring COMPLETE 2026-04-28; pending: DB schema migration, /home/keyLevels 403 diagnosis, formal milestone definition |
 
 ## Session Log
 
@@ -64,3 +65,5 @@ See: .planning/PROJECT.md (updated 2026-02-24)
 | 2026-02-25 | phase_4_complete | Paper Trading & Validation phase done. All 8 plans executed. 1466 tests passing (+579 from phase start). |
 | 2026-02-25 | milestone_1.0_complete | All 4 phases + Phase 2.1 complete. 1466 tests across 23 plans. System is fully operational research + paper trading platform. |
 | 2026-02-24 | milestone_1.0_shipped | v1.0 archived to milestones/v1.0-ROADMAP.md. MILESTONES.md created. PROJECT.md evolved. ROADMAP.md collapsed. Git tagged v1.0. |
+| 2026-04-07 | spotgamma_skeleton | Pre-subscription skeleton landed (commit 1490347): auth broker, API client, Playwright fallback scraper, store, Discord cog, DIY HIRO, multi-expiry GEX, signal reconciliation. 12,897 lines, 251 new tests. All endpoint paths PLACEHOLDER pending Day-1 recon. |
+| 2026-04-28 | spotgamma_day1_wiring | Day-1 wiring complete. Network recon discovered real API: api.spotgamma.com, JWT Bearer via localStorage.sgToken. Wired /v3/equitiesBySyms (Call Wall, Put Wall, Abs Gamma, IV rank, sig, ~90 fields), /v6/running_hiro (401 symbols), /v1/me/user. Refactored auth broker to dashboard-probe-first (reuse persistent context, login form fallback). Added parse_levels_from_v3() in models.py with new Optional fields. 162/162 SpotGamma tests pass. Live integration test confirms real SPX data flowing through production classes. /home/keyLevels and /v1/eh_symbols endpoints currently 403 from raw aiohttp (data covered by /v3/equitiesBySyms); diagnosis tracked separately. DB schema migration for new fields still pending. New deps: playwright>=1.40, playwright-stealth>=1.0. |
